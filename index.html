@@ -481,7 +481,7 @@ function renderSessions(d){
        `<td><span class="badge b-${s.source}">${SRC[s.source].label}</span></td>`+
        `<td>${s.model}</td><td class="muted">${s.project||"—"}</td>`+
        `<td>${fmtTok(s.tok)}</td><td>${fmtUSD(s.cost)}</td><td>${fmtNum(s.asst||s.req)}</td>`+
-       `<td>${fmtNum(s.tools)}</td><td>${s.dur?Math.round(s.dur):"—"}</td></tr>`;
+       `<td>${fmtNum(s.tools)}</td><td>${(s.source==="cursor")?"—":(s.dur?Math.round(s.dur):"—")}</td></tr>`;
   }
   h+="</tbody>";document.getElementById("sessTable").innerHTML=h;
   document.getElementById("sessHint").textContent=`${rows.length} sessions · click a header to sort`;

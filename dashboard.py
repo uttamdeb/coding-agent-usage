@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 13
+CACHE_VERSION = 14
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -208,10 +208,12 @@ def build_payload():
                          "(file/repo context, system prompts, tool outputs), so they are a large "
                          "undercount. Copilot's accurate usage metric is request count (the 'Msgs' "
                          "column) and the premium-request multiplier, not tokens. "
-                         "Cursor logs message counts but records tokens on only a few messages and "
-                         "no per-message model, dated by session — treat Cursor as message activity, "
-                         "not exact tokens. Gemini is not shown: its local logs persist no usable "
-                         "prompt/token/model data."),
+                         "Cursor: messages and tool calls are exact, but it stores tokens on only a "
+                         "few messages and no per-message model or cost (it meters usage server-side "
+                         "for its request-based plan) — so Cursor tokens/cost here are INCOMPLETE, a "
+                         "lower bound; see Cursor's own dashboard for real usage. Its session "
+                         "duration (Min) is unreliable and shown blank. Gemini is not shown: its "
+                         "local logs persist no usable prompt/token/model data."),
     }
 
 
