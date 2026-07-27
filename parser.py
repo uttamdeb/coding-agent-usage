@@ -683,6 +683,13 @@ def parse_cursor(agg, db_path):
         con.close()
         return
     sess = {}
+    # infer the repo/project name from any absolute path in a bubble
+    path_re = re.compile(r'/Users/[^/"\\]+/(?:Documents/GitHub|Documents|Desktop|'
+                         r'repos?|code|dev|projects|src|work)/([^/"\\\s]+)')
+
+    def _top(d):
+        return max(d, key=d.get) if d else None
+
     try:
         rows = cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'")
         for k, v in rows:
@@ -715,8 +722,8 @@ def parse_cursor(agg, db_path):
             elif typ == 1:
                 r["user"] += 1
                 T["user"] += 1
-            _bump_time(agg, dt, it + ot, 1 if typ == 2 else 0)
-            s = sess.setdefault(cid, {"in": 0, "out": 0, "asst": 0, "user": 0,
+            s = sess.setdefault(cid, {"in": 0, "out": 0, "asst": 0, "user": 0, "tools": 0,
+                                      "proj": {},
                                       "start": dt.isoformat(),
                                       "end": (_from_ms(c["updated"]) or dt).isoformat()})
             s["in"] += it
@@ -725,13 +732,41 @@ def parse_cursor(agg, db_path):
                 s["asst"] += 1
             elif typ == 1:
                 s["user"] += 1
+            # tool calls — Cursor persists each as toolFormerData on the bubble
+            tf = o.get("toolFormerData")
+            if isinstance(tf, dict):
+                name = tf.get("name") or tf.get("tool")
+                if name:
+                    agg["tools"][name] = agg["tools"].get(name, 0) + 1
+                    r["tools"] += 1
+                    T["tools"] += 1
+                    s["tools"] += 1
+            # infer project from paths in the bubble's context fields
+            for fld in ("attachedFolders", "attachedFoldersNew", "relevantFiles",
+                        "recentlyViewedFiles", "gitDiffs", "context"):
+                fv = o.get(fld)
+                if fv:
+                    for m in path_re.finditer(json.dumps(fv)):
+                        p = m.group(1)
+                        s["proj"][p] = s["proj"].get(p, 0) + 1
+            _bump_time(agg, dt, it + ot, 1 if typ == 2 else 0)
     finally:
         con.close()
+
+    # dominant inferred project across sessions drives the Projects-chart bucket
+    tally = {}
+    for s in sess.values():
+        p = _top(s["proj"])
+        if p:
+            tally[p] = tally.get(p, 0) + 1
+    agg["project"] = _top(tally) or "Cursor"
+
     agg["sessions"] = [{
         "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
-        "project": "Cursor", "model": model, "start": s["start"], "end": s["end"],
+        "project": _top(s["proj"]) or "Cursor",
+        "model": model, "start": s["start"], "end": s["end"],
         "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
-        "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0, "tools": 0,
+        "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0, "tools": s["tools"],
     } for cid, s in sess.items()]
 
 
