@@ -1,0 +1,14 @@
+# Your parsed usage data — NEVER commit this. It's personal (tokens, costs,
+# project names, timestamps) and is regenerated locally on first run.
+.usage_cache.json
+.usage_cache.json.tmp
+
+# runtime / local
+server.log
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+
+# scratch screenshots
+_*.png
