@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Usage Analytics</title>
+<script src="/chart.js"></script>
+<style>
+  :root{
+    --bg:#0a0d12; --panel:#12161d; --panel2:#161b24; --border:#222a35;
+    --text:#e6edf3; --muted:#8b98a9; --muted2:#5f6b7a;
+    --claude:#d97757; --cdesk:#e0b13a; --codex:#19c37d; --copilot:#a371f7; --cur:#d65db1; --oc:#38bdf8;
+    --accent:#4493f8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;font-size:14px}
+  a{color:var(--accent)}
+  .wrap{max-width:1340px;margin:0 auto;padding:22px 22px 80px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+  h1{font-size:20px;margin:0;font-weight:650;letter-spacing:.2px}
+  h1 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--codex);
+    margin-right:9px;vertical-align:middle;box-shadow:0 0 0 0 rgba(25,195,125,.6);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(25,195,125,.5)}70%{box-shadow:0 0 0 7px rgba(25,195,125,0)}100%{box-shadow:0 0 0 0 rgba(25,195,125,0)}}
+  .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .seg{display:flex;background:var(--panel);border:1px solid var(--border);border-radius:9px;overflow:hidden}
+  .seg button{background:none;border:none;color:var(--muted);padding:6px 11px;cursor:pointer;font-size:12.5px;font-weight:550}
+  .seg button.on{background:var(--panel2);color:var(--text)}
+  .seg button:hover{color:var(--text)}
+  .chip{display:inline-flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--border);
+    border-radius:20px;padding:6px 12px;cursor:pointer;font-size:12.5px;font-weight:550;color:var(--muted);user-select:none}
+  .chip .sw{width:9px;height:9px;border-radius:50%}
+  .chip.on{color:var(--text);border-color:var(--muted2)}
+  .chip.off{opacity:.42}
+  .refreshbtn{background:var(--panel);border:1px solid var(--border);color:var(--muted);border-radius:9px;
+    padding:6px 11px;cursor:pointer;font-size:12.5px}
+  .refreshbtn:hover{color:var(--text)}
+  /* KPI cards */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:13px 15px;position:relative;overflow:hidden}
+  .kpi .lab{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+  .kpi .val{font-size:23px;font-weight:680;margin-top:5px;letter-spacing:.3px}
+  .kpi .split{margin-top:8px;font-size:11px;color:var(--muted);display:flex;gap:9px;flex-wrap:wrap}
+  .kpi .split b{font-weight:600}
+  .s-claude{color:var(--claude)} .s-codex{color:var(--codex)} .s-copilot{color:var(--copilot)}
+  .s-claude-desktop{color:var(--cdesk)} .s-cursor{color:var(--cur)} .s-opencode{color:var(--oc)}
+  /* grid */
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:15px 16px}
+  .card h3{margin:0 0 2px;font-size:13.5px;font-weight:620}
+  .card .hint{color:var(--muted);font-size:11.5px;margin-bottom:10px}
+  .card .head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .col-12{grid-column:span 12}.col-8{grid-column:span 8}.col-6{grid-column:span 6}
+  .col-5{grid-column:span 5}.col-7{grid-column:span 7}.col-4{grid-column:span 4}.col-3{grid-column:span 3}
+  .chartbox{position:relative;width:100%}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:right;padding:7px 9px;border-bottom:1px solid var(--border);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;cursor:pointer;user-select:none}
+  th:hover{color:var(--text)}
+  tbody tr:hover{background:var(--panel2)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10.5px;font-weight:650}
+  .b-claude{background:rgba(217,119,87,.16);color:var(--claude)}
+  .b-claude-desktop{background:rgba(224,177,58,.16);color:var(--cdesk)}
+  .b-cursor{background:rgba(214,93,177,.16);color:var(--cur)}
+  .b-opencode{background:rgba(56,189,248,.16);color:var(--oc)}
+  .b-codex{background:rgba(25,195,125,.15);color:var(--codex)}
+  .b-copilot{background:rgba(163,113,247,.16);color:var(--copilot)}
+  .muted{color:var(--muted)}
+  .scroll{overflow-x:auto;max-height:430px;overflow-y:auto}
+  .tablewrap{overflow-x:auto}
+  .note{color:var(--muted2);font-size:11px;margin-top:14px;line-height:1.5}
+  .toggle{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;cursor:pointer}
+  .toggle input{accent-color:var(--accent)}
+  .empty{color:var(--muted);text-align:center;padding:40px 0;font-size:13px}
+  .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  /* contribution calendar */
+  .cal-wrap{overflow-x:auto;padding-bottom:6px}
+  .cal-wrap svg{display:block}
+  .cal-wrap rect{cursor:default}
+  .cal-legend{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:11px}
+  .cal-legend .cell{width:11px;height:11px;border-radius:2.5px;display:inline-block}
+  @media(max-width:1080px){.kpis{grid-template-columns:repeat(3,1fr)}.col-8,.col-6,.col-5,.col-7,.col-4,.col-3{grid-column:span 12}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1><span class="dot"></span>AI Usage Analytics</h1>
+      <div class="sub" id="subtitle">Local interaction logs · Claude Code · Codex · GitHub Copilot</div>
+    </div>
+    <div class="controls">
+      <div class="seg" id="rangeSeg">
+        <button data-r="1">Today</button>
+        <button data-r="7">7d</button>
+        <button data-r="30" class="on">30d</button>
+        <button data-r="90">90d</button>
+        <button data-r="365">1y</button>
+        <button data-r="0">All</button>
+      </div>
+      <span class="chip on" data-src="claude"><span class="sw" style="background:var(--claude)"></span>Claude Code</span>
+      <span class="chip on" data-src="claude-desktop"><span class="sw" style="background:var(--cdesk)"></span>Claude Desktop</span>
+      <span class="chip on" data-src="codex"><span class="sw" style="background:var(--codex)"></span>Codex</span>
+      <span class="chip on" data-src="copilot"><span class="sw" style="background:var(--copilot)"></span>Copilot</span>
+      <span class="chip on" data-src="cursor"><span class="sw" style="background:var(--cur)"></span>Cursor</span>
+      <span class="chip on" data-src="opencode"><span class="sw" style="background:var(--oc)"></span>opencode</span>
+      <label class="toggle"><input type="checkbox" id="autoref" checked>live</label>
+      <button class="refreshbtn" id="refreshNow">↻</button>
+    </div>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <div class="card col-12">
+      <div class="head">
+        <div><h3>Activity calendar</h3><div class="hint" id="calHint">daily activity · last 12 months</div></div>
+        <div class="cal-legend">Less
+          <span class="cell" style="background:#1c2230"></span>
+          <span class="cell" style="background:#0e4429"></span>
+          <span class="cell" style="background:#006d32"></span>
+          <span class="cell" style="background:#26a641"></span>
+          <span class="cell" style="background:#39d353"></span>More</div>
+      </div>
+      <div class="cal-wrap" id="calWrap"></div>
+    </div>
+
+    <div class="card col-8">
+      <div class="head">
+        <div><h3>Daily activity</h3><div class="hint" id="dailyHint">tokens per day, stacked by tool</div></div>
+        <div class="seg" id="metricSeg">
+          <button data-m="tokens" class="on">Tokens</button>
+          <button data-m="cost">Cost</button>
+          <button data-m="messages">Msgs</button>
+        </div>
+      </div>
+      <div class="chartbox" style="height:300px"><canvas id="dailyChart"></canvas></div>
+    </div>
+
+    <div class="card col-4">
+      <h3>Cumulative est. cost</h3>
+      <div class="hint">running total, by tool</div>
+      <div class="chartbox" style="height:300px"><canvas id="cumChart"></canvas></div>
+    </div>
+
+    <div class="card col-7">
+      <h3>Token composition</h3>
+      <div class="hint">prompt · cache read/write · output · thinking — by tool</div>
+      <div class="chartbox" style="height:230px"><canvas id="compChart"></canvas></div>
+    </div>
+    <div class="card col-5">
+      <h3>Token types</h3>
+      <div class="hint">overall share by token type</div>
+      <div class="chartbox" style="height:230px"><canvas id="compDonut"></canvas></div>
+    </div>
+
+    <div class="card col-5">
+      <h3>Model mix</h3>
+      <div class="hint">share of total tokens by model</div>
+      <div class="chartbox" style="height:250px"><canvas id="modelChart"></canvas></div>
+    </div>
+
+    <div class="card col-7">
+      <div class="head"><div><h3>Models</h3><div class="hint">tokens, estimated cost & share</div></div></div>
+      <div class="scroll"><table id="modelTable"></table></div>
+    </div>
+
+    <div class="card col-6">
+      <h3>Top tools</h3>
+      <div class="hint">tool / function calls invoked</div>
+      <div class="chartbox" style="height:300px"><canvas id="toolChart"></canvas></div>
+    </div>
+
+    <div class="card col-6">
+      <div class="head">
+        <div><h3>Projects</h3><div class="hint" id="projHint">tokens by working directory / workspace</div></div>
+        <div class="seg" id="projMetricSeg">
+          <button data-m="tokens" class="on">Tokens</button>
+          <button data-m="cost">Cost</button>
+          <button data-m="messages">Msgs</button>
+        </div>
+      </div>
+      <div class="chartbox" style="height:300px"><canvas id="projChart"></canvas></div>
+    </div>
+
+    <div class="card col-7">
+      <h3>Time of day <span class="muted" style="font-weight:400;font-size:11px">· all-time</span></h3>
+      <div class="hint">when you work, by local hour</div>
+      <div class="chartbox" style="height:220px"><canvas id="hourChart"></canvas></div>
+    </div>
+
+    <div class="card col-5">
+      <h3>Day of week <span class="muted" style="font-weight:400;font-size:11px">· all-time</span></h3>
+      <div class="hint">activity by weekday</div>
+      <div class="chartbox" style="height:220px"><canvas id="dowChart"></canvas></div>
+    </div>
+
+    <div class="card col-12">
+      <div class="head"><div><h3>Sessions</h3><div class="hint" id="sessHint">most recent first · click a header to sort</div></div></div>
+      <div class="tablewrap scroll"><table id="sessTable"></table></div>
+    </div>
+  </div>
+
+  <div class="note" id="pricingNote"></div>
+</div>
+
+<script>
+const SRC={claude:{label:"Claude Code",color:"#d97757"},
+  "claude-desktop":{label:"Claude Desktop",color:"#e0b13a"},
+  codex:{label:"Codex",color:"#19c37d"},
+  copilot:{label:"Copilot",color:"#a371f7"},
+  cursor:{label:"Cursor",color:"#d65db1"},
+  opencode:{label:"opencode",color:"#38bdf8"}};
+const ORDER=["claude","claude-desktop","codex","copilot","cursor","opencode"];
+const DOW=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const pad2=n=>(""+n).padStart(2,"0");
+const dkey=d=>d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+let RAW=null, active=new Set(ORDER), rangeDays=30, metric="tokens", projMetric="tokens";
+let sessSort={key:"end",dir:-1}, modelSort={key:"tokens",dir:-1};
+const charts={};
+
+// ---------- helpers ----------
+const fmtTok=n=>{n=n||0;if(n>=1e9)return (n/1e9).toFixed(2)+"B";if(n>=1e6)return (n/1e6).toFixed(2)+"M";if(n>=1e3)return (n/1e3).toFixed(1)+"K";return ""+Math.round(n)};
+const fmtUSD=n=>{n=n||0;if(n>=1000)return "$"+(n/1000).toFixed(1)+"k";return "$"+n.toFixed(2)};
+const fmtNum=n=>(n||0).toLocaleString();
+const recTokens=r=>r.in+r.out+r.cr+r.cc;
+// inclusive lower bound in LOCAL time (records are bucketed in local time, so UTC
+// toISOString() would be off by a day for tz ahead of UTC / near midnight)
+function cutoff(){
+  if(!rangeDays) return "0000-00-00";          // All
+  const d=new Date(); d.setHours(0,0,0,0);
+  d.setDate(d.getDate()-(rangeDays-1));         // rangeDays=1 → today only
+  return dkey(d);
+}
+function modelColor(model,vendor){
+  vendor=vendor||(RAW&&RAW.model_vendor[model])||"Other";
+  const pal={Anthropic:["#d97757","#e8916f","#c4633f","#f0a98a","#b14e2c"],
+             OpenAI:["#19c37d","#3dd99a","#0f9c63","#5fe8b3","#0a7a4d"],
+             Google:["#4493f8","#6fb0ff","#2b6fd6"],
+             Other:["#a371f7","#b98ef9","#8957e5","#8b98a9","#6f7c8c"]};
+  const arr=pal[vendor]||pal.Other;
+  let h=0;for(let i=0;i<model.length;i++)h=(h*31+model.charCodeAt(i))>>>0;
+  return arr[h%arr.length];
+}
+
+// ---------- filtering ----------
+function filtered(){
+  const c=cutoff();
+  const recs=RAW.records.filter(r=>active.has(r.source)&&r.date>=c);
+  const tools=RAW.tools.filter(t=>active.has(t.source));
+  const projects=RAW.projects.filter(p=>active.has(p.source));
+  const hourly=RAW.hourly.filter(h=>active.has(h.source));
+  const dow=RAW.dow.filter(d=>active.has(d.source));
+  const sessions=RAW.sessions.filter(s=>active.has(s.source)&&(!s.end||s.end.slice(0,10)>=c));
+  return {recs,tools,projects,hourly,dow,sessions};
+}
+
+// ---------- KPIs ----------
+function renderKPIs(d){
+  const bySrc={}; let tok=0,cost=0,msgs=0,reqs=0,tools=0; const days=new Set();
+  for(const r of d.recs){
+    const s=r.source; bySrc[s]=bySrc[s]||{tok:0,cost:0,msgs:0};
+    const t=recTokens(r); tok+=t; cost+=r.cost; msgs+=r.asst; reqs+=r.req; tools+=r.tools;
+    bySrc[s].tok+=t; bySrc[s].cost+=r.cost; bySrc[s].msgs+=r.asst;
+    if(r.date!=="0000-00-00")days.add(r.date);
+  }
+  const sessN=d.sessions.length;
+  const splitTok=Object.entries(bySrc).map(([s,v])=>`<span class="s-${s}"><b>${fmtTok(v.tok)}</b></span>`).join("");
+  const splitCost=Object.entries(bySrc).map(([s,v])=>`<span class="s-${s}"><b>${fmtUSD(v.cost)}</b></span>`).join("");
+  const splitMsg=Object.entries(bySrc).map(([s,v])=>`<span class="s-${s}"><b>${fmtTok(v.msgs)}</b></span>`).join("");
+  const cards=[
+    {lab:"Total tokens",val:fmtTok(tok),split:splitTok},
+    {lab:"Est. cost",val:fmtUSD(cost),split:splitCost},
+    {lab:"Assistant msgs",val:fmtNum(msgs),split:splitMsg},
+    {lab:"Sessions",val:fmtNum(sessN),split:""},
+    {lab:"Active days",val:fmtNum(days.size),split:""},
+    {lab:"Tool calls",val:fmtNum(tools),split:""},
+  ];
+  document.getElementById("kpis").innerHTML=cards.map(c=>
+    `<div class="kpi"><div class="lab">${c.lab}</div><div class="val">${c.val}</div><div class="split">${c.split||"&nbsp;"}</div></div>`).join("");
+}
+
+// ---------- charts ----------
+const gridC="rgba(255,255,255,.05)", tickC="#8b98a9";
+function baseOpts(extra){return Object.assign({responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{labels:{color:tickC,boxWidth:11,font:{size:11}}},tooltip:{}},
+  scales:{x:{grid:{color:gridC},ticks:{color:tickC,font:{size:10.5}}},
+          y:{grid:{color:gridC},ticks:{color:tickC,font:{size:10.5}}}}},extra||{});}
+function mk(id,cfg){if(charts[id])charts[id].destroy();charts[id]=new Chart(document.getElementById(id),cfg);}
+
+function renderDaily(d){
+  const dates=[...new Set(d.recs.map(r=>r.date))].filter(x=>x!=="0000-00-00").sort();
+  const valOf=r=>metric==="cost"?r.cost:metric==="messages"?r.asst:recTokens(r);
+  const ds=ORDER.filter(s=>active.has(s)).map(s=>{
+    const m={}; for(const r of d.recs)if(r.source===s){m[r.date]=(m[r.date]||0)+valOf(r);}
+    return {label:SRC[s].label,data:dates.map(dt=>m[dt]||0),backgroundColor:SRC[s].color,borderRadius:3,stack:"a"};
+  });
+  document.getElementById("dailyHint").textContent=
+    (metric==="cost"?"estimated $ per day":metric==="messages"?"assistant messages per day":"tokens per day")+", stacked by tool";
+  mk("dailyChart",{type:"bar",data:{labels:dates,datasets:ds},options:baseOpts({
+    plugins:{legend:{labels:{color:tickC,boxWidth:11,font:{size:11}}},
+      tooltip:{callbacks:{label:c=>` ${c.dataset.label}: `+(metric==="cost"?"$"+c.parsed.y.toFixed(2):metric==="messages"?fmtNum(c.parsed.y):fmtTok(c.parsed.y))}}},
+    scales:{x:{stacked:true,grid:{color:gridC},ticks:{color:tickC,maxTicksLimit:14,font:{size:10}}},
+            y:{stacked:true,grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>metric==="cost"?"$"+v:fmtTok(v)}}}})});
+}
+
+function renderCum(d){
+  const dates=[...new Set(d.recs.map(r=>r.date))].filter(x=>x!=="0000-00-00").sort();
+  const ds=ORDER.filter(s=>active.has(s)).map(s=>{
+    const m={}; for(const r of d.recs)if(r.source===s)m[r.date]=(m[r.date]||0)+r.cost;
+    let run=0; const data=dates.map(dt=>{run+=(m[dt]||0);return +run.toFixed(2);});
+    return {label:SRC[s].label,data,borderColor:SRC[s].color,backgroundColor:SRC[s].color+"22",
+      fill:true,tension:.25,pointRadius:0,borderWidth:2};
+  });
+  mk("cumChart",{type:"line",data:{labels:dates,datasets:ds},options:baseOpts({
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: $${c.parsed.y.toFixed(2)}`}}},
+    scales:{x:{grid:{color:gridC},ticks:{color:tickC,maxTicksLimit:7,font:{size:10}}},
+            y:{grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>"$"+v}}}})});
+}
+
+function modelAgg(d){
+  // keyed by model×TOOL so attribution stays explicit (a Claude/GPT model used
+  // from Copilot is counted under Copilot, never merged into Claude Code/Codex)
+  const m={};
+  for(const r of d.recs){if(r.model==="(user)")continue;
+    const k=r.source+"|"+r.model;
+    m[k]=m[k]||{source:r.source,model:r.model,tokens:0,cost:0,msgs:0,vendor:RAW.model_vendor[r.model]||"Other"};
+    m[k].tokens+=recTokens(r);m[k].cost+=r.cost;m[k].msgs+=r.asst;}
+  return Object.values(m).filter(x=>x.tokens>0||x.msgs>0);
+}
+function renderModel(d){
+  const arr=modelAgg(d);
+  // doughnut: grouped by model name across tools (overall model mix)
+  const byModel={};
+  for(const x of arr){byModel[x.model]=byModel[x.model]||{model:x.model,tokens:0,vendor:x.vendor};byModel[x.model].tokens+=x.tokens;}
+  const dm=Object.values(byModel).sort((a,b)=>b.tokens-a.tokens);
+  const top=dm.slice(0,9), rest=dm.slice(9);
+  const labels=top.map(x=>x.model), data=top.map(x=>x.tokens), cols=top.map(x=>modelColor(x.model,x.vendor));
+  if(rest.length){labels.push("Other");data.push(rest.reduce((s,x)=>s+x.tokens,0));cols.push("#5f6b7a");}
+  mk("modelChart",{type:"doughnut",data:{labels,datasets:[{data,backgroundColor:cols,borderColor:"#12161d",borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:"58%",
+      plugins:{legend:{position:"right",labels:{color:tickC,boxWidth:10,font:{size:10.5}}},
+        tooltip:{callbacks:{label:c=>` ${c.label}: ${fmtTok(c.parsed)} tok`}}}}});
+  // table: one row per model × tool
+  const total=arr.reduce((s,x)=>s+x.tokens,0)||1;
+  const sorted=[...arr].sort((a,b)=>{const k=modelSort.key;let av=a[k]==null?"":a[k],bv=b[k]==null?"":b[k];
+    if(typeof av==="string"||typeof bv==="string")return modelSort.dir*(""+av).localeCompare(""+bv);
+    return modelSort.dir*(av-bv);});
+  const hdr=[["source","Tool"],["model","Model"],["tokens","Tokens"],["cost","Est. $"],["msgs","Msgs"],["share","Share"]];
+  let h="<thead><tr>"+hdr.map(([k,l])=>`<th data-k="${k}" data-t="model">${l}${modelSort.key===k?(modelSort.dir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr></thead><tbody>";
+  for(const x of sorted){h+=`<tr><td><span class="badge b-${x.source}">${SRC[x.source].label}</span></td>`+
+    `<td><span class="swatch" style="background:${modelColor(x.model,x.vendor)}"></span>${x.model}</td>`+
+    `<td>${fmtTok(x.tokens)}</td><td>${fmtUSD(x.cost)}</td><td>${fmtNum(x.msgs)}</td><td>${(100*x.tokens/total).toFixed(1)}%</td></tr>`;}
+  h+="</tbody>";document.getElementById("modelTable").innerHTML=h;
+}
+
+// ---- token composition: prompt / cache read / cache write / output / thinking ----
+const TYPES=[["in","Input (prompt)","#4493f8"],["cr","Cache read","#3fb6c4"],
+             ["cc","Cache write","#c678dd"],["out","Output","#19c37d"],["reason","Thinking","#e5c07b"]];
+function renderTokenComp(d){
+  const tools=ORDER.filter(s=>active.has(s));
+  const acc={}; tools.forEach(s=>acc[s]={in:0,cr:0,cc:0,out:0,reason:0});
+  for(const r of d.recs){const a=acc[r.source];if(!a)continue;
+    a.in+=r.in;a.cr+=r.cr;a.cc+=r.cc;a.reason+=r.reason;a.out+=Math.max(0,r.out-r.reason);}
+  const ds=TYPES.map(([k,l,c])=>({label:l,data:tools.map(s=>acc[s][k]),backgroundColor:c,borderRadius:3,stack:"a"}));
+  mk("compChart",{type:"bar",data:{labels:tools.map(s=>SRC[s].label),datasets:ds},
+    options:baseOpts({indexAxis:"y",plugins:{legend:{labels:{color:tickC,boxWidth:10,font:{size:10.5}}},
+      tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtTok(c.parsed.x)}`}}},
+      scales:{x:{stacked:true,grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>fmtTok(v)}},
+              y:{stacked:true,grid:{display:false},ticks:{color:tickC,font:{size:11}}}}})});
+  const tot={in:0,cr:0,cc:0,out:0,reason:0};
+  tools.forEach(s=>TYPES.forEach(([k])=>tot[k]+=acc[s][k]));
+  const grand=TYPES.reduce((a,t)=>a+tot[t[0]],0)||1;
+  mk("compDonut",{type:"doughnut",data:{labels:TYPES.map(t=>t[1]),datasets:[{data:TYPES.map(t=>tot[t[0]]),
+      backgroundColor:TYPES.map(t=>t[2]),borderColor:"#12161d",borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:"56%",
+      plugins:{legend:{position:"right",labels:{color:tickC,boxWidth:10,font:{size:10}}},
+        tooltip:{callbacks:{label:c=>` ${c.label}: ${fmtTok(c.parsed)} (${(100*c.parsed/grand).toFixed(1)}%)`}}}}});
+}
+
+// ---- GitHub-style contribution calendar (last ~12 months, ignores range filter) ----
+function renderCalendar(){
+  const recs=RAW.records.filter(r=>active.has(r.source)&&r.date!=="0000-00-00");
+  const valOf=r=>metric==="cost"?r.cost:metric==="messages"?r.asst:recTokens(r);
+  const day={}; for(const r of recs)day[r.date]=(day[r.date]||0)+valOf(r);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const end=today;
+  const start=new Date(today); start.setDate(start.getDate()-364); start.setDate(start.getDate()-start.getDay());
+  const inWin=Object.keys(day).filter(k=>k>=dkey(start)&&k<=dkey(end)).map(k=>day[k]).filter(v=>v>0).sort((a,b)=>a-b);
+  const q=p=>inWin.length?inWin[Math.min(inWin.length-1,Math.floor(p*inWin.length))]:0;
+  const t1=q(.25),t2=q(.5),t3=q(.85);
+  const COLORS=["#1c2230","#0e4429","#006d32","#26a641","#39d353"];
+  const bucket=v=>v<=0?0:v<=t1?1:v<=t2?2:v<=t3?3:4;
+  const cell=12,gap=3,step=cell+gap,mL=28,mT=16;
+  const weeks=[]; let cur=new Date(start); while(cur<=end){weeks.push(new Date(cur));cur.setDate(cur.getDate()+7);}
+  const W=mL+weeks.length*step+2, H=mT+7*step;
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="inherit">`;
+  [["Mon",1],["Wed",3],["Fri",5]].forEach(([lab,r])=>{s+=`<text x="0" y="${mT+r*step+9}" fill="#5f6b7a" font-size="9">${lab}</text>`;});
+  let lastMonth=-1;
+  weeks.forEach((wk,wi)=>{
+    const m=wk.getMonth();
+    if(m!==lastMonth&&wk.getDate()<=7+0){ s+=`<text x="${mL+wi*step}" y="10" fill="#8b98a9" font-size="9.5">${MONTHS[m]}</text>`; lastMonth=m; }
+    else if(m!==lastMonth){ s+=`<text x="${mL+wi*step}" y="10" fill="#8b98a9" font-size="9.5">${MONTHS[m]}</text>`; lastMonth=m; }
+    for(let dwi=0;dwi<7;dwi++){
+      const dt=new Date(wk); dt.setDate(dt.getDate()+dwi);
+      if(dt>end||dt<start)continue;
+      const ds=dkey(dt), v=day[ds]||0;
+      const tip=`${ds}: `+(metric==="cost"?"$"+v.toFixed(2):metric==="messages"?fmtNum(v)+" msgs":fmtTok(v)+" tokens");
+      s+=`<rect x="${mL+wi*step}" y="${mT+dwi*step}" width="${cell}" height="${cell}" rx="2.5" fill="${COLORS[bucket(v)]}"><title>${tip}</title></rect>`;
+    }
+  });
+  s+=`</svg>`;
+  document.getElementById("calWrap").innerHTML=s;
+  const days=Object.keys(day).filter(k=>k>=dkey(start)&&k<=dkey(end)&&day[k]>0).length;
+  document.getElementById("calHint").textContent=
+    `${days} active days · last 12 months · ${metric==="cost"?"by est. $":metric==="messages"?"by messages":"by tokens"} (use the metric toggle)`;
+}
+
+function renderTools(d){
+  const m={}; for(const t of d.tools)m[t.name]=(m[t.name]||0)+t.count;
+  const arr=Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,14);
+  // color a tool by which source uses it most
+  const srcOf={}; for(const t of d.tools){srcOf[t.name]=srcOf[t.name]||{};srcOf[t.name][t.source]=(srcOf[t.name][t.source]||0)+t.count;}
+  const cols=arr.map(([n])=>{const o=srcOf[n]||{};let best="claude",bv=-1;for(const s in o)if(o[s]>bv){bv=o[s];best=s;}return SRC[best].color;});
+  mk("toolChart",{type:"bar",data:{labels:arr.map(x=>x[0]),datasets:[{data:arr.map(x=>x[1]),backgroundColor:cols,borderRadius:4}]},
+    options:baseOpts({indexAxis:"y",plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fmtNum(c.parsed.x)+" calls"}}},
+      scales:{x:{grid:{color:gridC},ticks:{color:tickC,font:{size:10}}},y:{grid:{display:false},ticks:{color:tickC,font:{size:10.5}}}}})});
+}
+
+function renderProjects(d){
+  const vk=projMetric==="cost"?"cost":projMetric==="messages"?"msgs":"tokens";
+  const m={};
+  for(const p of d.projects){const v=m[p.project]=m[p.project]||{val:0,src:{}};const pv=p[vk]||0;
+    v.val+=pv;v.src[p.source]=(v.src[p.source]||0)+pv;}
+  const arr=Object.entries(m).filter(x=>x[1].val>0).sort((a,b)=>b[1].val-a[1].val).slice(0,12);
+  const cols=arr.map(([n,v])=>{let best=ORDER[0],bv=-1;for(const s in v.src)if(v.src[s]>bv){bv=v.src[s];best=s;}return (SRC[best]||{}).color||"#5f6b7a";});
+  const fmt=projMetric==="cost"?fmtUSD:projMetric==="messages"?fmtNum:fmtTok;
+  const unit=projMetric==="cost"?"":projMetric==="messages"?" msgs":" tok";
+  document.getElementById("projHint").textContent=(projMetric==="cost"?"est. $":projMetric==="messages"?"messages":"tokens")+" by working directory / workspace";
+  mk("projChart",{type:"bar",data:{labels:arr.map(x=>x[0]),datasets:[{data:arr.map(x=>x[1].val),backgroundColor:cols,borderRadius:4}]},
+    options:baseOpts({indexAxis:"y",plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+unit}}},
+      scales:{x:{grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>fmt(v)}},y:{grid:{display:false},ticks:{color:tickC,font:{size:10.5}}}}})});
+}
+
+function renderHour(d){
+  const hours=[...Array(24).keys()];
+  const ds=ORDER.filter(s=>active.has(s)).map(s=>{
+    const a=Array(24).fill(0);for(const h of d.hourly)if(h.source===s)a[h.hour]+=h.tokens;
+    return {label:SRC[s].label,data:a,backgroundColor:SRC[s].color,borderRadius:2,stack:"a"};});
+  mk("hourChart",{type:"bar",data:{labels:hours.map(h=>(""+h).padStart(2,"0")),datasets:ds},
+    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtTok(c.parsed.y)}`}}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{color:tickC,font:{size:9.5}}},
+              y:{stacked:true,grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>fmtTok(v)}}}})});
+}
+
+function renderDOW(d){
+  const ds=ORDER.filter(s=>active.has(s)).map(s=>{
+    const a=Array(7).fill(0);for(const x of d.dow)if(x.source===s)a[x.dow]+=x.tokens;
+    return {label:SRC[s].label,data:a,backgroundColor:SRC[s].color,borderRadius:3,stack:"a"};});
+  mk("dowChart",{type:"bar",data:{labels:DOW,datasets:ds},
+    options:baseOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtTok(c.parsed.y)}`}}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{color:tickC,font:{size:10}}},
+              y:{stacked:true,grid:{color:gridC},ticks:{color:tickC,font:{size:10},callback:v=>fmtTok(v)}}}})});
+}
+
+function renderSessions(d){
+  const rows=d.sessions.map(s=>({...s,tok:s.in+s.out+s.cr+s.cc,
+    dur:(s.start&&s.end)?Math.max(0,(new Date(s.end)-new Date(s.start))/60000):0,
+    when:s.end||s.start||""}));
+  const k=sessSort.key;
+  rows.sort((a,b)=>{let av=a[k],bv=b[k];if(typeof av==="string"||typeof bv==="string"){return sessSort.dir*((""+av).localeCompare(""+bv));}return sessSort.dir*((av||0)-(bv||0));});
+  const hdr=[["when","When"],["source","Tool"],["model","Model"],["project","Project"],["tok","Tokens"],["cost","Est. $"],["asst","Msgs"],["tools","Tools"],["dur","Min"]];
+  let h="<thead><tr>"+hdr.map(([key,l])=>`<th data-k="${key}" data-t="sess">${l}${sessSort.key===key?(sessSort.dir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr></thead><tbody>";
+  for(const s of rows.slice(0,300)){
+    const when=s.when?s.when.slice(0,16).replace("T"," "):"—";
+    h+=`<tr><td class="muted">${when}</td>`+
+       `<td><span class="badge b-${s.source}">${SRC[s.source].label}</span></td>`+
+       `<td>${s.model}</td><td class="muted">${s.project||"—"}</td>`+
+       `<td>${fmtTok(s.tok)}</td><td>${fmtUSD(s.cost)}</td><td>${fmtNum(s.asst||s.req)}</td>`+
+       `<td>${fmtNum(s.tools)}</td><td>${s.dur?Math.round(s.dur):"—"}</td></tr>`;
+  }
+  h+="</tbody>";document.getElementById("sessTable").innerHTML=h;
+  document.getElementById("sessHint").textContent=`${rows.length} sessions · click a header to sort`;
+}
+
+function renderAll(){
+  if(!RAW){return;}
+  const d=filtered();
+  if(!d.recs.length){document.getElementById("kpis").innerHTML='<div class="empty col-12" style="grid-column:span 6">No data in this range / filter.</div>';}
+  renderKPIs(d);renderCalendar();renderDaily(d);renderCum(d);renderTokenComp(d);renderModel(d);renderTools(d);renderProjects(d);renderHour(d);renderDOW(d);renderSessions(d);
+}
+
+// ---------- data load ----------
+async function load(){
+  try{
+    const r=await fetch("/api/data");const j=await r.json();RAW=j;
+    const dr=RAW.records.filter(x=>x.date!=="0000-00-00").map(x=>x.date);
+    const lo=dr.length?dr.reduce((a,b)=>a<b?a:b):"—",hi=dr.length?dr.reduce((a,b)=>a>b?a:b):"—";
+    const fresh=new Date(j.meta.last_refresh*1000).toLocaleTimeString();
+    document.getElementById("subtitle").textContent=`${j.meta.files} log files · ${lo} → ${hi} · refreshed ${fresh}`;
+    document.getElementById("pricingNote").textContent="ⓘ "+j.pricing_note;
+    renderAll();
+  }catch(e){document.getElementById("subtitle").textContent="⚠ failed to load /api/data — is the server running?";}
+}
+
+// ---------- events ----------
+document.getElementById("rangeSeg").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
+  rangeDays=+b.dataset.r;[...e.currentTarget.children].forEach(x=>x.classList.toggle("on",x===b));renderAll();});
+document.getElementById("metricSeg").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
+  metric=b.dataset.m;[...e.currentTarget.children].forEach(x=>x.classList.toggle("on",x===b));renderAll();});
+document.getElementById("projMetricSeg").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
+  projMetric=b.dataset.m;[...e.currentTarget.children].forEach(x=>x.classList.toggle("on",x===b));renderAll();});
+document.querySelectorAll(".chip[data-src]").forEach(ch=>ch.addEventListener("click",()=>{
+  const s=ch.dataset.src;if(active.has(s)){if(active.size>1)active.delete(s);}else active.add(s);
+  ch.classList.toggle("on",active.has(s));ch.classList.toggle("off",!active.has(s));renderAll();}));
+document.addEventListener("click",e=>{const th=e.target.closest("th[data-k]");if(!th)return;
+  const k=th.dataset.k,t=th.dataset.t;
+  if(t==="sess"){sessSort.dir=(sessSort.key===k?-sessSort.dir:-1);sessSort.key=k;}
+  else{modelSort.dir=(modelSort.key===k?-modelSort.dir:-1);modelSort.key=k;}
+  renderAll();});
+document.getElementById("refreshNow").addEventListener("click",async()=>{await fetch("/api/refresh");load();});
+let timer=setInterval(()=>{if(document.getElementById("autoref").checked)load();},15000);
+
+// optional ?range=1|7|30|90|365|0 to preset the window
+const _qp=new URLSearchParams(location.search);
+if(_qp.has("range")){
+  rangeDays=+_qp.get("range")||0;
+  [...document.querySelectorAll("#rangeSeg button")].forEach(b=>b.classList.toggle("on",+b.dataset.r===rangeDays));
+}
+
+load();
+</script>
+</body>
+</html>
