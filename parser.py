@@ -1026,24 +1026,25 @@ def update_file(agg, source, path, editor_hint, proj_map):
 def _finalize_session(agg, source, path):
     """Roll the file's totals into a single session summary."""
     T = agg["totals"]
-    dom = agg["state"].get("dom_model")
-    if not dom:
-        # pick model with most tokens from records
-        best, bestv = None, -1
-        for k, r in agg["records"].items():
-            mdl = k.split("\t", 1)[1]
-            if mdl in ("(user)",):
-                continue
-            v = r["in"] + r["out"]
-            if v > bestv:
-                bestv, best = v, mdl
-        dom = best or "Unknown"
+    # rank the models used in this session by tokens (a session — especially a
+    # resumed Codex rollout — can switch models mid-way)
+    mt = {}
+    for k, r in agg["records"].items():
+        mdl = k.split("\t", 1)[1]
+        if mdl == "(user)":
+            continue
+        mt[mdl] = mt.get(mdl, 0) + r["in"] + r["out"]
+    ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])]
+    dom = agg["state"].get("dom_model") or (ranked[0] if ranked else "Unknown")
+    models = [dom] + [m for m in ranked if m != dom]   # dominant first
     agg["sessions"] = [{
         "id": os.path.splitext(os.path.basename(path))[0][:8],
         "source": source,
         "editor": agg.get("editor"),
         "project": agg.get("project"),
         "model": dom,
+        "models": models[:6],          # for the "+N" indicator / tooltip
+        "nmodels": len(mt),
         "start": agg.get("first_ts"),
         "end": agg.get("last_ts"),
         "in": T["in"], "out": T["out"], "cr": T["cr"], "cc": T["cc"],

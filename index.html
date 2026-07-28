@@ -479,7 +479,7 @@ function renderSessions(d){
     const when=s.when?s.when.slice(0,16).replace("T"," "):"—";
     h+=`<tr><td class="muted">${when}</td>`+
        `<td><span class="badge b-${s.source}">${SRC[s.source].label}</span></td>`+
-       `<td>${s.model}</td><td class="muted">${s.project||"—"}</td>`+
+       `<td>${s.model}${s.nmodels>1?` <span class="muted" title="${(s.models||[]).join(' · ')}">+${s.nmodels-1}</span>`:""}</td><td class="muted">${s.project||"—"}</td>`+
        `<td>${fmtTok(s.tok)}</td><td>${fmtUSD(s.cost)}</td><td>${fmtNum(s.asst||s.req)}</td>`+
        `<td>${fmtNum(s.tools)}</td><td>${(s.source==="cursor")?"—":(s.dur?Math.round(s.dur):"—")}</td></tr>`;
   }
