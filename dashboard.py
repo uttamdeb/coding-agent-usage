@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 28
+CACHE_VERSION = 29
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -187,7 +187,7 @@ def build_payload():
             date, _, b = ck.partition("\t")
             if not b:
                 continue
-            e = ctxb.setdefault((date, b), {"tok": 0, "n": 0})
+            e = ctxb.setdefault((date, b, source), {"tok": 0, "n": 0})
             e["tok"] += v.get("tok", 0)
             e["n"] += v.get("n", 0)
         for tk, c in agg.get("tools", {}).items():
@@ -291,8 +291,9 @@ def build_payload():
         # Real per-1M rates for the models THIS user actually ran, so the client can
         # cost a "what if this had run on X" without any hardcoded model list.
         "prices": {m: list(P.price_of(m)) for m in model_meta},
+        "codex_effort": _codex_config()["effort"],
         "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
-        "ctx": [{"date": d, "bucket": b, **v} for (d, b), v in ctxb.items()],
+        "ctx": [{"date": d, "bucket": b, "source": src, **v} for (d, b, src), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,
         "projects": proj_list,
@@ -454,9 +455,31 @@ def _mcp_servers():
         for name in ((v or {}).get("mcpServers") or {}):
             e = out.setdefault(name, {"name": name, "scope": "project", "projects": []})
             e["projects"].append(P._leaf(proj) or proj)
-    data = sorted(out.values(), key=lambda x: x["name"].lower())
+    for name in _codex_config()["servers"]:
+        out.setdefault("codex:" + name,
+                       {"name": name, "scope": "global", "projects": [], "tool": "codex"})
+    for e in out.values():
+        e.setdefault("tool", "claude")
+    data = sorted(out.values(), key=lambda x: (x["tool"], x["name"].lower()))
     _mcp_cache.update(at=time.time(), data=data)
     return data
+
+
+_CODEX_MCP_RE = __import__("re").compile(r"^\s*\[mcp_servers\.([^.\]]+)\]", __import__("re").M)
+
+
+def _codex_config():
+    """Codex's config.toml, read WITHOUT a TOML parser — tomllib is 3.11+ and this
+    project supports 3.8. Only two things are needed and both are line-shaped."""
+    path = os.path.join(P.HOME, ".codex", "config.toml")
+    try:
+        with open(path) as f:
+            txt = f.read()
+    except Exception:
+        return {"servers": [], "effort": None}
+    servers = sorted(set(_CODEX_MCP_RE.findall(txt)))
+    m = __import__("re").search(r'^\s*model_reasoning_effort\s*=\s*"([^"]+)"', txt, __import__("re").M)
+    return {"servers": servers, "effort": m.group(1) if m else None}
 
 
 def build_settings():

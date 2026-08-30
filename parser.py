@@ -624,6 +624,14 @@ def parse_codex(agg, lines):
                     r["out"] += out
                     r["reason"] += reason
                     _bump_time(agg, dt, inp + out, 0)
+                    # Codex reports the FULL context it sent as input_tokens (cached
+                    # or not), which is exactly the per-request context size — bucket
+                    # it the same way as Claude Code so the finding is cross-tool.
+                    date0 = _buckets(dt)[0]
+                    b = ("0-50k" if inp < 50_000 else "50-150k" if inp < 150_000
+                         else "150-400k" if inp < 400_000 else "400k+")
+                    ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
+                    ce["tok"] += inp + out; ce["n"] += 1
                     T = agg["totals"]
                     T["in"] += max(0, inp - cached); T["cr"] += cached
                     T["out"] += out; T["reason"] += reason
@@ -644,8 +652,16 @@ def parse_codex(agg, lines):
         elif t == "response_item" and dt:
             if pt in ("function_call", "custom_tool_call"):
                 date = _buckets(dt)[0]
-                _tool(agg, date, pl.get("name") or
-                      ("function" if pt == "function_call" else "custom_tool"))
+                nm = pl.get("name") or ("function" if pt == "function_call" else "custom_tool")
+                # Codex does not prefix MCP tools the way Claude Code does — it keeps
+                # the bare tool name and puts the server in `namespace` ("mcp__azure").
+                # Normalise to mcp__<server>__<tool> so MCP usage is attributable and
+                # comparable across tools; without this an MCP tool is indistinguishable
+                # from a built-in and every Codex server looks unused.
+                ns = pl.get("namespace") or ""
+                if ns.startswith("mcp__"):
+                    nm = f"{ns}__{nm}"
+                _tool(agg, date, nm)
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
 
     agg["state"]["cur_model"] = cur_model

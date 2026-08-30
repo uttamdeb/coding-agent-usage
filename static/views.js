@@ -1285,20 +1285,25 @@ function findIdleMCP(d){
     const srv = norm(i>0 ? rest.slice(0,i) : rest);
     used[srv] = (used[srv]||0) + t.count;
   }
-  const idle = RAW.mcp_servers.filter(m => {
+  const wanted = arguments[1];
+  const idle = RAW.mcp_servers.filter(m => (m.tool||"claude")===wanted).filter(m => {
     const n = norm(m.name);
     // loose match: a server may appear in tool names under a shortened alias
     return !Object.keys(used).some(u => u===n || u.includes(n) || n.includes(u));
   });
   if(!idle.length) return null;
+  const label = (SRC[wanted]||{label:wanted}).label;
   return {
-    id:"idle-mcp", impact: 0, sev:"info", tools:["claude"],
-    title:`${idle.length} MCP server${idle.length>1?"s":""} configured but never called`,
+    id:"idle-mcp-"+wanted, impact: 0, sev:"info", tools:[wanted],
+    title:`${idle.length} ${label} MCP server${idle.length>1?"s":""} configured but never called`,
     body:`Every connected MCP server's tool definitions are injected into the system prompt of `
       +`<b>every request</b>, whether you use them or not. These ${idle.length} were not called `
       +`once in the selected range: <b>${idle.map(m=>esc(m.name)).join(", ")}</b>.`,
-    todo:"Disconnect the ones you don't reach for — in Claude Code, /mcp, or remove them from "
-      +"~/.claude.json. Re-add when you next need them.",
+    todo: wanted==="codex"
+      ? "Remove the ones you don't reach for from the [mcp_servers.*] blocks in "
+        +"~/.codex/config.toml, and re-add when you next need them."
+      : "Disconnect the ones you don't reach for — in Claude Code, /mcp, or remove them from "
+        +"~/.claude.json. Re-add when you next need them.",
     rows: idle.map(m => [m.name, m.scope==="global"?"global":"project-scoped",
       m.projects && m.projects.length ? m.projects.slice(0,3).join(", ") : "—", "0 calls"])
   };
@@ -1418,9 +1423,10 @@ function findBigContext(d){
   if(!RAW.ctx || !RAW.ctx.length) return null;
   const inRange = RAW.ctx.filter(x => x.date>=d.r.from && x.date<=d.r.to);
   if(!inRange.length) return null;
-  const by={}; let tot=0;
+  const by={}; let tot=0; const srcs=new Set();
   for(const x of inRange){ by[x.bucket]=(by[x.bucket]||{tok:0,n:0});
-    by[x.bucket].tok+=x.tok; by[x.bucket].n+=x.n; tot+=x.tok; }
+    by[x.bucket].tok+=x.tok; by[x.bucket].n+=x.n; tot+=x.tok;
+    if(x.source) srcs.add(x.source); }
   if(!tot) return null;
   const big=(by["150-400k"]?.tok||0)+(by["400k+"]?.tok||0);
   const share=big/tot;
@@ -1428,12 +1434,15 @@ function findBigContext(d){
   const total=d.recs.reduce((a,r)=>a+(r.cost||0),0);
   const order=["0-50k","50-150k","150-400k","400k+"];
   return {
-    id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low", tools:["claude"],
+    id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low", tools:[...srcs],
     title:`${fmtPct(share)} of your tokens were sent at over 150k context`,
     body:`Every turn re-sends the whole conversation. Past roughly 150k the re-read dominates `
       +`the bill even when it is cached, because a cache read is charged per token too.`,
-    todo:"/compact once a task is done to drop the history behind it, and /clear (or a fresh "
-      +"session) when you switch to something unrelated.",
+    todo: srcs.has("claude")
+      ? "/compact once a task is done to drop the history behind it, and /clear (or a fresh "
+        +"session) when you switch to something unrelated."
+      : "Start a fresh session when you switch tasks rather than continuing a long one — "
+        +"the whole history is re-sent on every turn.",
     rows: order.filter(b=>by[b]).map(b =>
       [b+" context", `${fmtNum(by[b].n)} requests`, fmtNum(by[b].tok)+" tokens",
        fmtPct(by[b].tok/tot)])
@@ -1461,8 +1470,37 @@ function findSubagentShare(d){
   };
 }
 
+
+/* Codex pins a global reasoning effort in ~/.codex/config.toml. Worth raising only
+   when the setting is at the top of the scale AND the logs show reasoning actually
+   dominating the output — otherwise it is someone's deliberate choice, not a finding. */
+function findCodexEffort(d){
+  const eff = RAW.codex_effort;
+  if(!eff || !["high","xhigh","ultra","max"].includes(String(eff).toLowerCase())) return null;
+  let reason=0, out=0, cost=0;
+  for(const r of d.recs){
+    if(r.source!=="codex") continue;
+    reason += r.reason||0; out += r.out||0; cost += r.cost||0;
+  }
+  if(!out || !cost) return null;
+  const share = reason/out;
+  if(share < 0.2) return null;
+  return {
+    id:"codex-effort", impact: cost*share*0.25, sev: share>0.5?"high":"low", tools:["codex"],
+    title:`Codex reasoning effort is set to "${esc(eff)}"`,
+    body:`<b>${fmtNum(reason)}</b> of ${fmtNum(out)} Codex output tokens (${fmtPct(share)}) were `
+      +`reasoning, billed at the output rate, against <b>${fmtUSD(cost)}</b> of Codex spend in `
+      +`this range. <code>model_reasoning_effort</code> is a global default, so it applies to `
+      +`trivial turns as much as hard ones.`,
+    todo:"Lower model_reasoning_effort in ~/.codex/config.toml and raise it per-task when a "
+      +"problem actually warrants it.",
+    rows: []
+  };
+}
+
 const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
-                     findSubagents, findSubagentShare, findSkills, findIdleMCP,
+                     findSubagents, findSubagentShare, findSkills, findCodexEffort,
+                     d => findIdleMCP(d, "claude"), d => findIdleMCP(d, "codex"),
                      findThinking, findLowCache];
 
 /* Say plainly when a suggestion only applies to one tool — the MCP, Skills and
@@ -1475,8 +1513,10 @@ function scopeLabel(f){
   const present = new Set(SLICE_SOURCES);
   if(t.length >= present.size && [...present].every(x=>t.includes(x))) return "";
   const names = t.map(x=>(SRC[x]||{label:x}).label);
-  return `<div class="finding-scope">${names.map(n=>
-    `<span class="scope-chip">${esc(n)} only</span>`).join("")}</div>`;
+  // "X only" reads right for a single tool; for several it is nonsense ("A only,
+  // B only"), so just name them.
+  const text = names.length === 1 ? names[0] + " only" : names.join(" · ");
+  return `<div class="finding-scope"><span class="scope-chip">${esc(text)}</span></div>`;
 }
 let SLICE_SOURCES=[];
 

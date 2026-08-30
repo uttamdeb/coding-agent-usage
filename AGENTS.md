@@ -124,6 +124,14 @@ finding does not span every source present in the range — the MCP, Skills and
 advice about their own setup. No chip is shown when it applies to everything, since
 then the label is noise.
 
+**MCP attribution differs by tool.** Claude Code names MCP tools
+`mcp__<server>__<tool>`; Codex keeps the bare tool name and puts the server in a
+separate `namespace` field (`"mcp__azure"`). `parse_codex` normalises to Claude's
+shape — without that, an MCP tool is indistinguishable from a built-in and every
+Codex server looks unused. Configured servers come from `~/.claude.json` and the
+`[mcp_servers.*]` blocks of `~/.codex/config.toml` (parsed by regex, not tomllib,
+which is 3.11+).
+
 It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
 drove a request — this is how "/dataviz cost you $20" is possible), a per-request
 context-size histogram (`agg["ctx"]`, bucketed 0-50k / 50-150k / 150-400k / 400k+),
