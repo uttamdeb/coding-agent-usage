@@ -16,6 +16,14 @@ from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
 
+
+def _leaf(path):
+    """Last path component of a cwd recorded on ANY OS — a macOS/Linux log read on
+    Windows (or vice versa) still has the other platform's separator in it."""
+    if not path:
+        return ""
+    return os.path.basename(str(path).replace("\\", "/").rstrip("/"))
+
 # ---------------------------------------------------------------------------
 # Source locations
 # ---------------------------------------------------------------------------
@@ -27,9 +35,24 @@ CODEX_GLOBS = [
 # Claude Desktop "local agent mode" runs Claude Code in a sandbox; it writes
 # standard Claude-format transcripts under a nested .claude/projects/ tree
 # (the sibling audit.jsonl mirrors the same sessions, so we deliberately skip it).
+def _app_support_roots(name):
+    """Per-user application-data dirs for `name` on macOS, Windows and Linux."""
+    out, seen = [], set()
+    for base in (os.path.join(HOME, "Library", "Application Support"),   # macOS
+                 os.environ.get("APPDATA"),                              # Windows
+                 os.environ.get("LOCALAPPDATA"),                         # Windows
+                 os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")):
+        if not base:
+            continue
+        r = os.path.join(base, name)
+        if r not in seen:
+            seen.add(r); out.append(r)
+    return out
+
+
 CLAUDE_DESKTOP_GLOBS = [
-    os.path.join(HOME, "Library", "Application Support", "Claude",
-                 "local-agent-mode-sessions", "**", ".claude", "projects", "**", "*.jsonl"),
+    os.path.join(r, "local-agent-mode-sessions", "**", ".claude", "projects", "**", "*.jsonl")
+    for r in _app_support_roots("Claude")
 ]
 # Gemini CLI persists ONLY user prompts locally (no model / no tokens / no responses),
 # so this source contributes activity (prompts/sessions/days/projects) but no token data.
@@ -63,9 +86,12 @@ CURSOR_DBS = [os.path.join(r, "User", "globalStorage", "state.vscdb")
 # cost is stored as 0, so we compute it from tokens like every other source.
 def _opencode_roots():
     roots, seen = [], set()
+    win = [os.path.join(b, "opencode")
+           for b in (os.environ.get("LOCALAPPDATA"), os.environ.get("APPDATA")) if b]
     for r in [os.environ.get("OPENCODE_DATA_DIR"),
               os.path.join(os.environ.get("XDG_DATA_HOME") or
                            os.path.join(HOME, ".local", "share"), "opencode"),
+              *win,
               os.path.join(HOME, ".opencode")]:
         if r and r not in seen:
             seen.add(r); roots.append(r)
@@ -99,7 +125,9 @@ PRICING = {
     # Sonnet 5 STANDARD rate ($3/$15); a $2/$10 intro rate applies through
     # 2026-08-31 and is handled date-aware in dashboard._cost.
     "Claude Sonnet 5": (3, 15, 3.75, 6, 0.30),
+    "Claude Mythos Preview": (10, 50, 12.5, 20, 1.0),
     # Anthropic Opus 4.5+ — $5/$25 (current pricing)
+    "Claude Opus 5": (5, 25, 6.25, 10, 0.50),
     "Claude Opus 4.8": (5, 25, 6.25, 10, 0.50),
     "Claude Opus 4.7": (5, 25, 6.25, 10, 0.50),
     "Claude Opus 4.6": (5, 25, 6.25, 10, 0.50),
@@ -131,6 +159,7 @@ PRICING = {
     "GPT-5.4 Nano": (0.20, 1.25, 0, 0, 0.02),
     # older GPT-5.x — delisted from OpenAI's current table, kept as estimates
     "GPT-5.3": (2.5, 15, 0, 0, 0.25),
+    "GPT-5.3 Codex": (2.5, 15, 0, 0, 0.25),
     "GPT-5.2": (1.25, 10, 0, 0, 0.125),
     "GPT-5.1": (1.25, 10, 0, 0, 0.125),
     "GPT-5": (1.25, 10, 0, 0, 0.125),
@@ -293,14 +322,18 @@ def _blank_agg(source, path):
         "mtime": 0.0,
         "offset": 0,           # bytes parsed (jsonl only)
         "records": {},          # "date\tmodel" -> token/count dict
-        "tools": {},            # tool name -> count
-        "hourly": {},           # "hour" -> {tokens, msgs}
-        "dow": {},              # "dow" -> {tokens, msgs}
+        "tools": {},            # "date\ttool name" -> count
+        "hourly": {},           # "date\thour" -> {tokens, msgs}  (day-of-week is
+                                #   derived from the date, so it needs no bucket)
         "project": "(unknown)",
         "editor": None,
+        "title": None,          # human-readable session name, when the tool logs one
+        "branch": None,         # git branch the work happened on
+        "entry": None,          # entrypoint / originator (CLI vs IDE)
+        "cliver": None,         # tool version that wrote the log
         "totals": {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
                    "reason": 0, "asst": 0, "user": 0, "req": 0, "prem": 0.0,
-                   "tools": 0},
+                   "tools": 0, "side": 0},
         "first_ts": None,
         "last_ts": None,
         # transient stream state for incremental codex parsing
@@ -319,19 +352,72 @@ def _rec(agg, date, model):
     return r
 
 
+def _tool(agg, date, name):
+    """Count one tool/function call, keyed by day so the UI can date-filter it."""
+    k = f"{date}\t{name}"
+    agg["tools"][k] = agg["tools"].get(k, 0) + 1
+    agg["totals"]["tools"] += 1
+
+
 def _bump_time(agg, dt, tokens, msgs):
-    date, hour, dow = _buckets(dt)
-    h = agg["hourly"].setdefault(str(hour), {"tokens": 0, "msgs": 0})
+    date, hour, _dow = _buckets(dt)
+    h = agg["hourly"].setdefault(f"{date}\t{hour}", {"tokens": 0, "msgs": 0})
     h["tokens"] += tokens
     h["msgs"] += msgs
-    d = agg["dow"].setdefault(str(dow), {"tokens": 0, "msgs": 0})
-    d["tokens"] += tokens
-    d["msgs"] += msgs
     iso = dt.isoformat()
     if agg["first_ts"] is None or iso < agg["first_ts"]:
         agg["first_ts"] = iso
     if agg["last_ts"] is None or iso > agg["last_ts"]:
         agg["last_ts"] = iso
+
+
+_TITLE_NOISE = re.compile(
+    r"^\s*([-*>|]|#|<|```|\[|Context from my IDE|Files mentioned by the user|"
+    r"Active file:|Screenshot|Caveat:|Distinguish instructions|<system-reminder)", re.I)
+
+
+def _clean_prompt(text):
+    """First line of a prompt that is actual user intent, not IDE/tool preamble."""
+    if not text:
+        return ""
+    for line in str(text).splitlines():
+        line = line.strip()
+        if not line or _TITLE_NOISE.match(line):
+            continue
+        return line
+    return ""
+
+
+def _set_title(agg, text, weak=False):
+    """Record a session title. A strong title (one the tool itself named the
+    session) always wins; a weak one (first user prompt) only fills a blank."""
+    if weak:
+        text = _clean_prompt(text)
+    if not text:
+        return
+    t = " ".join(str(text).split())[:90]
+    if not t:
+        return
+    if weak and agg.get("title"):
+        return
+    if not weak and agg.get("_strong_title"):
+        return
+    agg["title"] = t
+    if not weak:
+        agg["_strong_title"] = True
+
+
+def _first_text(content):
+    """First plain-text chunk of a Claude/Codex message content field."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, str):
+                return b
+            if isinstance(b, dict) and isinstance(b.get("text"), str):
+                return b["text"]
+    return ""
 
 
 # ===========================================================================
@@ -350,7 +436,20 @@ def parse_claude(agg, lines):
         t = o.get("type")
         cwd = o.get("cwd")
         if cwd:
-            project = os.path.basename(cwd.rstrip("/")) or cwd
+            project = _leaf(cwd) or cwd
+        # session metadata Claude Code writes on every entry
+        if o.get("gitBranch"):
+            agg["branch"] = o["gitBranch"]
+        if o.get("entrypoint"):
+            agg["entry"] = o["entrypoint"]
+        if o.get("version"):
+            agg["cliver"] = o["version"]
+        # the tool's own name for the session beats a prompt snippet
+        if o.get("customTitle"):
+            _set_title(agg, o["customTitle"])
+        elif o.get("aiTitle"):
+            _set_title(agg, o["aiTitle"])
+        side = bool(o.get("isSidechain"))
         msg = o.get("message") if isinstance(o.get("message"), dict) else None
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
 
@@ -377,16 +476,16 @@ def parse_claude(agg, lines):
                 if isinstance(content, list):
                     for blk in content:
                         if isinstance(blk, dict) and blk.get("type") == "tool_use":
-                            name = blk.get("name", "tool")
-                            agg["tools"][name] = agg["tools"].get(name, 0) + 1
+                            _tool(agg, _buckets(dt)[0], blk.get("name", "tool"))
                             tools += 1
                 r["tools"] += tools
-                agg["totals"]["tools"] += tools
                 _bump_time(agg, dt, inp + out + cr + cc, 1)
                 T = agg["totals"]
                 T["in"] += inp; T["out"] += out; T["cr"] += cr; T["cc"] += cc
                 T["cc5"] += cc5; T["cc1"] += cc1
                 T["asst"] += 1
+                if side:                      # spawned subagent, not the main loop
+                    T["side"] += inp + out + cr + cc
                 model_tokens[model] = model_tokens.get(model, 0) + inp + out
         elif t == "user" and msg:
             # only count genuine user turns (not tool_result echoes)
@@ -397,6 +496,8 @@ def parse_claude(agg, lines):
                 r = _rec(agg, _buckets(dt)[0], "(user)")
                 r["user"] += 1
                 agg["totals"]["user"] += 1
+                if not side:
+                    _set_title(agg, _first_text(content), weak=True)
 
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
@@ -432,14 +533,21 @@ def parse_codex(agg, lines):
         if t == "session_meta":
             cwd = pl.get("cwd")
             if cwd:
-                project = os.path.basename(cwd.rstrip("/")) or cwd
+                project = _leaf(cwd) or cwd
+            if pl.get("originator"):
+                agg["entry"] = pl["originator"]
+            if pl.get("cli_version"):
+                agg["cliver"] = pl["cli_version"]
+            g = pl.get("git")
+            if isinstance(g, dict) and g.get("branch"):
+                agg["branch"] = g["branch"]
         elif t == "turn_context":
             m = pl.get("model")
             if m:
                 cur_model = normalize_codex(m)
             cwd = pl.get("cwd")
             if cwd:
-                project = os.path.basename(cwd.rstrip("/")) or cwd
+                project = _leaf(cwd) or cwd
         elif t == "event_msg":
             if pt == "token_count":
                 info = pl.get("info") or {}
@@ -469,19 +577,18 @@ def parse_codex(agg, lines):
                 if dt:
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
+                    _set_title(agg, pl.get("message") or _first_text(pl.get("content")),
+                               weak=True)
             elif pt in ("web_search_call", "web_search_end"):
-                if pt == "web_search_call":
-                    agg["tools"]["web_search"] = agg["tools"].get("web_search", 0) + 1
-                    agg["totals"]["tools"] += 1
-        elif t == "response_item":
-            if pt == "function_call":
-                name = pl.get("name") or "function"
-                agg["tools"][name] = agg["tools"].get(name, 0) + 1
-                agg["totals"]["tools"] += 1
-            elif pt == "custom_tool_call":
-                name = pl.get("name") or "custom_tool"
-                agg["tools"][name] = agg["tools"].get(name, 0) + 1
-                agg["totals"]["tools"] += 1
+                if pt == "web_search_call" and dt:
+                    _tool(agg, _buckets(dt)[0], "web_search")
+                    _rec(agg, _buckets(dt)[0], cur_model or "Unknown")["tools"] += 1
+        elif t == "response_item" and dt:
+            if pt in ("function_call", "custom_tool_call"):
+                date = _buckets(dt)[0]
+                _tool(agg, date, pl.get("name") or
+                      ("function" if pt == "function_call" else "custom_tool"))
+                _rec(agg, date, cur_model or "Unknown")["tools"] += 1
 
     agg["state"]["cur_model"] = cur_model
     agg["project"] = project
@@ -530,17 +637,18 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     # estimated tokens from text length (Copilot logs no real token counts)
     msg = r.get("message") or {}
     in_chars = len(msg.get("text", "")) if isinstance(msg, dict) else 0
+    if isinstance(msg, dict) and msg.get("text"):
+        _set_title(agg, msg["text"], weak=True)
     out_chars = _copilot_text_len(r.get("response"))
     est_in = in_chars // 4
     est_out = out_chars // 4
     meta = (r.get("result") or {}).get("metadata") or {}
     ntools = 0
+    date = _buckets(dt)[0]
     for round_ in (meta.get("toolCallRounds") or []):
         for tc in (round_.get("toolCalls") or []):
-            name = tc.get("name") or "tool"
-            agg["tools"][name] = agg["tools"].get(name, 0) + 1
+            _tool(agg, date, tc.get("name") or "tool")
             ntools += 1
-    date = _buckets(dt)[0]
     rec = _rec(agg, date, model)
     rec["in"] += est_in; rec["out"] += est_out
     rec["req"] += 1; rec["user"] += 1; rec["asst"] += 1
@@ -549,7 +657,7 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     T = agg["totals"]
     T["in"] += est_in; T["out"] += est_out
     T["req"] += 1; T["user"] += 1; T["asst"] += 1
-    T["prem"] += mult; T["tools"] += ntools
+    T["prem"] += mult
     return model
 
 
@@ -678,14 +786,20 @@ def parse_cursor(agg, db_path):
             cid = o.get("composerId")
             created = o.get("createdAt") or o.get("lastUpdatedAt")
             if cid and created:
-                comp[cid] = {"created": created, "updated": o.get("lastUpdatedAt") or created}
+                comp[cid] = {"created": created,
+                             "updated": o.get("lastUpdatedAt") or created,
+                             "name": o.get("name") or o.get("title")}
     except Exception:
         con.close()
         return
     sess = {}
     # infer the repo/project name from any absolute path in a bubble
-    path_re = re.compile(r'/Users/[^/"\\]+/(?:Documents/GitHub|Documents|Desktop|'
-                         r'repos?|code|dev|projects|src|work)/([^/"\\\s]+)')
+    # Home-relative source dirs on any OS: /Users/x/... (macOS), /home/x/...
+    # (Linux) and C:\\Users\\x\\... (Windows). Either separator, either drive.
+    path_re = re.compile(
+        r'(?:/Users/|/home/|[A-Za-z]:[\\\\/]{1,2}Users[\\\\/]{1,2})[^/\\\\"]+[\\\\/]{1,2}'
+        r'(?:Documents[\\\\/]{1,2}GitHub|Documents|Desktop|repos?|code|dev|projects|src|work)'
+        r'[\\\\/]{1,2}([^/\\\\"\\s]+)', re.I)
 
     def _top(d):
         return max(d, key=d.get) if d else None
@@ -737,9 +851,8 @@ def parse_cursor(agg, db_path):
             if isinstance(tf, dict):
                 name = tf.get("name") or tf.get("tool")
                 if name:
-                    agg["tools"][name] = agg["tools"].get(name, 0) + 1
+                    _tool(agg, date, name)
                     r["tools"] += 1
-                    T["tools"] += 1
                     s["tools"] += 1
             # infer project from paths in the bubble's context fields
             for fld in ("attachedFolders", "attachedFoldersNew", "relevantFiles",
@@ -763,6 +876,7 @@ def parse_cursor(agg, db_path):
 
     agg["sessions"] = [{
         "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
+        "title": (comp.get(cid) or {}).get("name"),
         "project": _top(s["proj"]) or "Cursor",
         "model": model, "start": s["start"], "end": s["end"],
         "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
@@ -809,7 +923,7 @@ def _opencode_project(session_dir, sid):
             o = json.load(open(sf))
             d = o.get("directory") or o.get("cwd") or ""
             if d:
-                return os.path.basename(d.rstrip("/")) or d
+                return _leaf(d) or d
             if o.get("title"):
                 return str(o["title"])[:40]
             break
@@ -986,13 +1100,17 @@ def update_file(agg, source, path, editor_hint, proj_map):
             return agg
         fresh = _blank_agg(source, path)
         fresh["editor"] = editor_hint
+        try:                                  # size first: _finalize_session reads it
+            fresh["size"] = sum(os.path.getsize(m) for m in msgs)
+        except OSError:
+            fresh["size"] = 0
         try:
             parse_opencode(fresh, path, msgs)
             _finalize_session(fresh, source, path)
         except Exception:
             pass
         fresh["_sig"] = sig
-        fresh["size"], fresh["mtime"] = 0, sig_mtime
+        fresh["mtime"] = sig_mtime
         return fresh
 
     # jsonl (claude / codex) — incremental append
@@ -1037,18 +1155,27 @@ def _finalize_session(agg, source, path):
     ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])]
     dom = agg["state"].get("dom_model") or (ranked[0] if ranked else "Unknown")
     models = [dom] + [m for m in ranked if m != dom]   # dominant first
+    base = os.path.splitext(os.path.basename(path))[0]
+    m = re.match(r"rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f]{8})", base)
+    if m:
+        base = m.group(1)
     agg["sessions"] = [{
-        "id": os.path.splitext(os.path.basename(path))[0][:8],
+        "id": base[:8],
         "source": source,
         "editor": agg.get("editor"),
         "project": agg.get("project"),
         "model": dom,
         "models": models[:6],          # for the "+N" indicator / tooltip
         "nmodels": len(mt),
+        "title": agg.get("title"),
+        "branch": agg.get("branch"),
+        "entry": agg.get("entry"),
+        "cliver": agg.get("cliver"),
         "start": agg.get("first_ts"),
         "end": agg.get("last_ts"),
         "in": T["in"], "out": T["out"], "cr": T["cr"], "cc": T["cc"],
         "cc5": T["cc5"], "cc1": T["cc1"],
         "asst": T["asst"], "user": T["user"], "req": T["req"],
-        "prem": T["prem"], "tools": T["tools"],
+        "prem": T["prem"], "tools": T["tools"], "side": T.get("side", 0),
+        "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
     }]

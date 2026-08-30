@@ -2,8 +2,9 @@
 
 A **live, local** analytics dashboard for your AI coding-assistant usage. It reads the
 interaction logs your tools already write to your own machine and serves an interactive
-dashboard — tokens, estimated cost, a GitHub-style activity calendar, token-type
-composition, and breakdowns by **model, day, hour, day-of-week, tool, project, and session**.
+dashboard — tokens, estimated cost, cache efficiency, an **Anthropic vs OpenAI vs Copilot**
+provider comparison, a GitHub-style activity calendar, and breakdowns by **model, provider,
+day, hour, weekday, tool, project and session** — plus how much **disk** all these logs eat.
 
 **Your data never leaves your machine.** No account, no API key, no telemetry, no
 dependencies — just Python's standard library and a vendored copy of Chart.js.
@@ -29,9 +30,13 @@ Then open **http://127.0.0.1:7878**. That's it — no `pip install`, no setup.
 Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full re-parse) ·
 `--interval 20` (background refresh seconds). Or `./run.sh [flags]`.
 
-**Requirements:** Python 3.8+, macOS or Linux. It works on anyone's machine because every
-path is derived from your home directory — the tools store logs in the same place for
-every user.
+**Requirements:** Python 3.8+ on **macOS, Linux or Windows**. On Windows run
+`python dashboard.py` (or `run.cmd`); on macOS/Linux `python3 dashboard.py` (or `./run.sh`).
+
+It works on anyone's machine because **nothing is hardcoded** — every location is derived at
+runtime from your own `$HOME` / `%APPDATA%` / `%LOCALAPPDATA%` / `$XDG_*`, the numbers are
+read live from your own logs on every refresh, and the disk figures come from your own drive.
+Two people running this see two completely different dashboards.
 
 ---
 
@@ -51,11 +56,11 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | Tool | Where it reads | Tokens |
 |---|---|---|
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | exact (in/out/cache read+write, 5m/1h tiers) |
-| **Claude Desktop** (agent mode) | `~/Library/Application Support/Claude/local-agent-mode-sessions/**` | exact |
+| **Claude Desktop** (agent mode) | `Claude/local-agent-mode-sessions/**` under App Support / `%APPDATA%` / `~/.config` | exact |
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning) |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
-| **Cursor** (native AI) | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | partial (few messages carry tokens) |
-| **opencode** | `~/.local/share/opencode/storage/message/**` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache) |
+| **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial (few messages carry tokens) |
+| **opencode** | `~/.local/share/opencode`, `%LOCALAPPDATA%\opencode`, `~/.opencode` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache) |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
 a Claude or GPT model used *inside* Copilot/Cursor/opencode counts under that tool, and the
@@ -65,13 +70,56 @@ Models table lists each `model × tool` row separately.
 
 ## What you get
 
-- **KPI cards** — total tokens, estimated cost, messages, sessions, active days, tool calls.
-- **Activity calendar** — GitHub-style contribution heatmap (last 12 months).
-- **Daily activity** + **cumulative cost**, toggle Tokens / Cost / Messages.
-- **Token composition** — prompt / cache-read / cache-write / output / **thinking**.
-- **Model mix** — doughnut + sortable `model × tool` table.
-- **Top tools**, **projects**, **time-of-day**, **day-of-week**, and a sortable **sessions** table.
-- Filters: date range (Today / 7d / 30d / 90d / 1y / All), per-tool chips, live toggle.
+Seven tabs, light + dark theme, everything date-filterable.
+
+**Overview** — KPI cards with sparklines and period-over-period deltas · Highlights (biggest
+day, priciest session, longest streak, busiest hour) · GitHub-style activity calendar (click a
+day to zoom to it) · daily activity stacked by tool · share by tool · **hour × weekday
+heatmap** · token composition.
+
+**Cost** — total / per active day / 30-day run rate / per session / per prompt ·
+**cache hit rate and what caching saved you** · blended $ per 1M tokens by model ·
+cumulative and daily cost by tool.
+
+**Models & Providers** — **Anthropic vs OpenAI vs Google head-to-head** (independent of which
+tool ran the model) · concentric provider→model doughnut · provider share over time ·
+model-adoption timeline · **provider × tool matrix** · sortable `model × tool` table with a
+⚠ on any model missing a price row.
+
+**Tools & Agents** — tool calls per prompt / per message, context amplification, subagent
+token share · top tool calls · calls by category (read / edit / execute / web / agents / MCP)
+· **MCP server usage** · full sortable tool list.
+
+**Projects** — by tokens / cost / messages, concentration stats, and a table where clicking a
+row filters everything to that project.
+
+**Sessions** — real session titles (not hashes), tool, project, model, tokens, cost, prompts,
+messages, tool calls, cache % — click any row for a detail panel with git branch, entrypoint,
+tool version, token breakdown and log size.
+
+**Storage** — see below.
+
+**Filters** — flexible date range (14 presets incl. this week / month / quarter / year, plus a
+custom start–end picker), **compare vs. previous period**, multi-select dropdowns for tool,
+provider, project and model, search, and an "exact tokens only" toggle that drops the sources
+whose token counts are estimated. Filter state shows as removable pills.
+
+**Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `/` search, `t` theme, `r` refresh.
+
+---
+
+## Storage — what these logs cost you in disk
+
+The tools you use write a *lot* to disk, and nothing else tells you how much. The **Storage**
+tab shows total footprint and per-tool bytes, a free-space gauge that warns when the drive is
+nearly full, storage accumulation over time, the largest individual log files, **bytes per 1M
+tokens** (which tool stores its history most expensively), AI data on disk the dashboard does
+*not* analyse, and copy-paste cleanup commands **generated for your own paths and your own
+shell** (`find` on macOS/Linux, PowerShell on Windows). The dashboard never deletes anything
+itself.
+
+Deleting old logs does **not** shrink your analytics — the dashboard keeps every session it has
+already parsed, so the cleanup is safe.
 
 ---
 
@@ -82,7 +130,7 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
 `(input, output, cache_write_5m, cache_write_1h, cache_read)` per 1M tokens; edit freely
 (recomputed on each request, no re-parse needed).
 
-- **Anthropic** rates are current list prices (Opus 4.x $5/$25, Sonnet $3/$15 — Sonnet 5 at
+- **Anthropic** rates are current list prices (Opus 5 & 4.x $5/$25, Sonnet $3/$15 — Sonnet 5 at
   its $2/$10 intro, date-aware — Haiku $1/$5; cache write 1.25×/2× input for 5-min/1-hour,
   cache read 0.1×). **OpenAI** GPT-5.4/5.5/5.6 are verified from OpenAI docs; older/other
   models are estimates.
@@ -106,15 +154,18 @@ deletes the on-disk log, so totals don't silently shrink once seen.
 - **Add a model's price / fix an unknown model:** edit `PRICING` (and, if needed, the
   model-name normalizer) in `parser.py`. Verify rates against the vendor's docs.
 - **Add a new tool:** add its paths + a `parse_*` function in `parser.py`, wire `discover()`
-  and `update_file()`, then add it to `SRC`/`ORDER` in `index.html`.
+  and `update_file()`, then add it to `SRC`/`ORDER` in `static/core.js` and give it a
+  `--t-<source>` colour in `static/app.css`. The tool colours are a colour-blind-validated
+  palette whose *order* is the safety mechanism — see AGENTS.md before changing them.
 
 See **[AGENTS.md](AGENTS.md)** for a concise, agent-oriented guide (any coding agent can run
 and extend this from that file).
 
 ## Files
 
-`dashboard.py` (server + cache + cost) · `parser.py` (log parsers + pricing) ·
-`index.html` (frontend) · `chart.umd.min.js` (vendored Chart.js) · `AGENTS.md` · `run.sh`.
+`dashboard.py` (server + cache + cost + `/api/storage`) · `parser.py` (log parsers + pricing) ·
+`index.html` (shell) · `static/app.css` · `static/core.js` · `static/charts.js` ·
+`static/views.js` · `chart.umd.min.js` (vendored Chart.js) · `AGENTS.md` · `run.sh`.
 
 ## License
 
