@@ -75,8 +75,9 @@ tooltips (identity must never be colour-alone).
 ## Sources covered
 Claude Code (`~/.claude/projects`), Claude Desktop agent mode, Codex (`~/.codex/sessions`),
 GitHub Copilot (VS Code/Insiders/Cursor `chatSessions`), Cursor native AI (`state.vscdb`),
-and opencode (`~/.local/share/opencode/storage/message`). Missing tools simply contribute
-nothing. Paths are derived from `$HOME` / XDG, so it works on any user's machine.
+and opencode (`opencode.db` inside `~/.local/share/opencode`, `%LOCALAPPDATA%\opencode`,
+or `~/.opencode`). Missing tools simply contribute nothing. Paths are derived from
+`$HOME` / XDG, so it works on any user's machine.
 
 ## Common tasks
 - **A new model shows $0 / an unknown name** → add/fix it in `parser.py`:

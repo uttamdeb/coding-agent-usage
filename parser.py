@@ -5,9 +5,10 @@ Sources: Claude Code, Claude Desktop (agent mode), Codex CLI, GitHub Copilot
 (VS Code / Insiders / Cursor), Cursor native AI, and opencode. Each tool stores
 interaction logs locally; this module discovers those files, parses them
 incrementally (append-only .jsonl read from a byte offset; rewritten stores
-re-read on change), and produces per-file aggregates the server merges into one
-dataset. Everything is keyed off the user's own home dir — nothing is hardcoded
-to a machine or account, so it works on any Mac/Linux install of the same tools.
+and SQLite databases re-read on change), and produces per-file aggregates the
+server merges into one dataset. Everything is keyed off the user's own home
+dir — nothing is hardcoded to a machine or account, so it works on any
+Mac/Linux install of the same tools.
 
 No third-party dependencies — stdlib only.
 """
@@ -99,6 +100,8 @@ def _opencode_roots():
 
 
 OPENCODE_ROOTS = _opencode_roots()
+# Current opencode stores interaction history in a single SQLite database.
+OPENCODE_DBS = [os.path.join(r, "opencode.db") for r in OPENCODE_ROOTS]
 
 EDITOR_LABEL = {
     "Code": "VS Code",
@@ -183,7 +186,7 @@ def vendor_of(display):
         return "Anthropic"
     if d.startswith(("gpt", "o3", "o4", "o1")):
         return "OpenAI"
-    if "gemini" in d:
+    if "gemini" in d or "gemma" in d:
         return "Google"
     if display in ("Auto", "(synthetic)", "Unknown"):
         return "Other"
@@ -347,7 +350,7 @@ def _rec(agg, date, model):
     r = agg["records"].get(key)
     if r is None:
         r = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
-              "asst": 0, "user": 0, "req": 0, "prem": 0.0, "tools": 0}
+              "asst": 0, "user": 0, "req": 0, "prem": 0.0, "tools": 0, "cost": 0.0}
         agg["records"][key] = r
     return r
 
@@ -1013,16 +1016,57 @@ def _from_ms_or_s(v):
 
 
 def _normalize_opencode(model_id, provider):
-    """opencode modelID is the provider's raw id (claude-sonnet-4-5, gpt-5.6-sol,
-    gemini-2.5-pro, ...). _canonicalize already handles Claude/GPT/o-series; other
-    providers pass through with light cleanup."""
+    """opencode modelID is the provider's raw id. Cloudflare Workers AI aliases use
+    the @cf/<publisher>/<model> namespace; opencode's own providers expose a mix
+    of bare ids. Map both onto readable display names."""
     if not model_id:
         return "Unknown"
+    # Cloudflare IDs look like @cf/moonshotai/kimi-k2.7-code — the meaningful
+    # part is the last path segment, which is also what bare opencode ids use.
+    base = model_id.split("/")[-1]
+    low = base.lower()
+
+    # Kimi (Moonshot) — @cf/moonshotai/kimi-k2.7-code or kimi-k3
+    m = re.match(r"^kimi-k([0-9.]+)(?:-code)?$", low)
+    if m:
+        suffix = " Code" if "code" in low else ""
+        return f"Kimi K{m.group(1)}{suffix}"
+
+    # Google Gemma via Cloudflare — @cf/google/gemma-4-26b-a4b-it
+    m = re.match(r"^gemma-(\d+(?:\.\d+)?)-(\d+b)(?:-[a-z0-9\-]+)*$", low)
+    if m:
+        return f"Gemma {m.group(1)} {m.group(2).upper()}"
+
+    # DeepSeek — deepseek-v4-flash[-free]
+    m = re.match(r"^deepseek-v?([0-9.]+)-flash(-free)?$", low)
+    if m:
+        free = " Free" if m.group(2) else ""
+        return f"DeepSeek V{m.group(1)} Flash{free}"
+
+    # Qwen — qwen3.7-max
+    m = re.match(r"^qwen(\d+(?:\.\d+)?)(?:-(max|plus|coder))?$", low)
+    if m:
+        suffix = " " + m.group(2).capitalize() if m.group(2) else ""
+        return f"Qwen {m.group(1)}{suffix}"
+
+    # Zhipu GLM via Cloudflare — @cf/zai-org/glm-5.2
+    m = re.match(r"^glm-(\d+(?:\.\d+)?)$", low)
+    if m:
+        return f"GLM {m.group(1)}"
+
+    # opencode-hosted aliases without a recognised family
+    if low == "big-pickle":
+        return "Big Pickle"
+    if low == "north-mini-code" or low == "north-mini-code-free":
+        return "North Mini Code"
+    if low.startswith("x-preview"):
+        return "X Preview"
+
+    # Claude/GPT/o-series handled by the shared canonicalizer
     name = _canonicalize(model_id)
     if name and name != model_id:
         return name
-    # prettify a bare provider id we didn't canonicalize (e.g. gemini-2.5-pro)
-    base = model_id.split("/")[-1]
+
     return base
 
 
@@ -1092,6 +1136,198 @@ def parse_opencode(agg, session_dir, msg_files):
         model_tokens[model] = model_tokens.get(model, 0) + inp + out
     if model_tokens:
         agg["state"]["dom_model"] = max(model_tokens, key=model_tokens.get)
+
+
+# ===========================================================================
+# OPENCODE SQLite database (current opencode stores messages in opencode.db)
+# ===========================================================================
+def parse_opencode_db(agg, db_path):
+    """Parse the current opencode SQLite database. One DB holds many sessions,
+    messages and parts; we aggregate tokens per day/model and return a session
+    list similar to Cursor's composer breakdown."""
+    import sqlite3
+    agg["source"] = "opencode"
+    agg["editor"] = "opencode"
+
+    def _loads(v):
+        try:
+            return json.loads(v) if v else None
+        except Exception:
+            return None
+
+    sessions_meta = {}
+    sess = {}          # sid -> running totals
+    model_tokens = {}
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro&busy_timeout=5000", uri=True)
+    except Exception:
+        return
+    cur = con.cursor()
+    try:
+        # ---- session metadata ---------------------------------------------
+        for row in cur.execute(
+            "SELECT id, directory, title, agent, model, version, "
+            "parent_id, time_created, time_updated FROM session"):
+            sid, directory, title, agent, model_json, version, parent_id, tc, tu = row
+            model = _loads(model_json) or {}
+            sessions_meta[sid] = {
+                "directory": directory or "",
+                "title": title or "",
+                "agent": agent or "",
+                "model_id": model.get("id"),
+                "provider_id": model.get("providerID"),
+                "variant": model.get("variant"),
+                "version": version or "",
+                "parent_id": parent_id,
+                "start": tc,
+                "end": tu,
+            }
+
+        # dominant project for aggregate-level project bucket
+        proj_tally = {}
+        for s in sessions_meta.values():
+            p = _leaf(s["directory"]) or s["directory"] or "opencode"
+            proj_tally[p] = proj_tally.get(p, 0) + 1
+        agg["project"] = max(proj_tally, key=proj_tally.get) if proj_tally else "opencode"
+
+        # ---- tool parts (batch) --------------------------------------------
+        # tool rows in part have {"type":"tool", "tool":"<name>", ...}
+        tools_by_msg = {}
+        for mid, data in cur.execute(
+                "SELECT message_id, data FROM part WHERE json_extract(data,'$.type')='tool'"):
+            o = _loads(data)
+            if not o:
+                continue
+            name = o.get("tool") or o.get("name") or "tool"
+            tools_by_msg.setdefault(mid, []).append(str(name))
+
+        # ---- messages -------------------------------------------------------
+        for row in cur.execute(
+                "SELECT id, session_id, time_created, data FROM message"):
+            mid, sid, tc, data = row
+            o = _loads(data)
+            if not o:
+                continue
+            meta = sessions_meta.get(sid)
+            role = o.get("role")
+            ts = (o.get("time") or {}).get("created") or tc
+            dt = _from_ms_or_s(ts)
+            if not dt:
+                continue
+            date = _buckets(dt)[0]
+
+            if role == "user":
+                r = _rec(agg, date, "(user)")
+                r["user"] += 1
+                agg["totals"]["user"] += 1
+                _bump_time(agg, dt, 0, 0)
+                # weak title from first user prompt of the session
+                if meta and not meta.get("_weak_title_set"):
+                    text = ""
+                    for part in (o.get("parts") or o.get("content") or []):
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text = part.get("text", "")
+                            break
+                    if text:
+                        _set_title(agg, text, weak=True)
+                        meta["_weak_title_set"] = True
+                s = sess.setdefault(sid, _blank_opencode_session())
+                if "end" not in s or dt.isoformat() > s["end"]:
+                    s["end"] = dt.isoformat()
+                s["user"] += 1
+                continue
+
+            if role != "assistant":
+                continue
+
+            t = o.get("tokens") or {}
+            cache = t.get("cache") or {}
+            inp = int(t.get("input", 0) or 0)
+            out = int(t.get("output", 0) or 0)
+            reason = int(t.get("reasoning", 0) or 0)
+            cr = int(cache.get("read", 0) or 0)
+            cw = int(cache.get("write", 0) or 0)
+            cost = float(o.get("cost") or 0.0)
+            if not (inp or out or cr or cw):
+                # token-less assistant bookkeeping rows (flow control, etc.)
+                continue
+            provider = o.get("providerID") or (meta.get("provider_id") if meta else None)
+            model = _normalize_opencode(o.get("modelID"), provider)
+
+            model_tokens[model] = model_tokens.get(model, 0) + inp + out + cr + cw
+
+            # tool calls from preloaded part rows
+            ntools = 0
+            for name in tools_by_msg.get(mid, []):
+                _tool(agg, date, name)
+                ntools += 1
+
+            r = _rec(agg, date, model)
+            r["tools"] += ntools
+            r["in"] += inp; r["out"] += out; r["reason"] += reason
+            r["cr"] += cr; r["cc"] += cw; r["cc5"] += cw
+            r["asst"] += 1
+            r["cost"] += cost
+
+            _bump_time(agg, dt, inp + out + cr + cw, 1)
+            T = agg["totals"]
+            T["in"] += inp; T["out"] += out; T["reason"] += reason
+            T["cr"] += cr; T["cc"] += cw; T["cc5"] += cw; T["asst"] += 1
+            T["cost"] = T.get("cost", 0.0) + cost
+            if meta and meta.get("parent_id"):
+                T["side"] = T.get("side", 0) + inp + out + cr + cw
+
+            s = sess.setdefault(sid, _blank_opencode_session())
+            iso = dt.isoformat()
+            if "start" not in s or iso < s["start"]:
+                s["start"] = iso
+            if "end" not in s or iso > s["end"]:
+                s["end"] = iso
+            s["in"] += inp; s["out"] += out; s["reason"] += reason
+            s["cr"] += cr; s["cc"] += cw; s["cc5"] += cw
+            s["asst"] += 1
+            s["tools"] += ntools
+            s["cost"] += cost
+
+        # ---- build per-session summaries ----------------------------------
+        out = []
+        for sid, s in sess.items():
+            meta = sessions_meta.get(sid, {})
+            model_id = meta.get("model_id")
+            provider_id = meta.get("provider_id")
+            model = _normalize_opencode(model_id, provider_id)
+            directory = meta.get("directory") or "opencode"
+            title = meta.get("title") or agg.get("title")
+            agent = meta.get("agent")
+            start_dt = _from_ms_or_s(meta.get("start"))
+            end_dt = _from_ms_or_s(meta.get("end"))
+            out.append({
+                "id": (sid or "")[:8],
+                "source": "opencode",
+                "editor": "opencode",
+                "title": title,
+                "project": _leaf(directory) or directory or "opencode",
+                "model": model,
+                "start": start_dt.isoformat() if start_dt else s.get("start"),
+                "end": end_dt.isoformat() if end_dt else s.get("end"),
+                "in": s["in"], "out": s["out"], "cr": s["cr"], "cc": s["cc"],
+                "cc5": s["cc5"], "cc1": s["cc1"],
+                "asst": s["asst"], "user": s["user"], "req": 0,
+                "prem": 0.0, "tools": s["tools"], "side": 0,
+                "cost": s["cost"],
+                "cliver": meta.get("version"),
+                "mode": agent,
+            })
+        agg["sessions"] = sorted(out, key=lambda x: x.get("end") or "", reverse=True)
+        if model_tokens:
+            agg["state"]["dom_model"] = max(model_tokens, key=model_tokens.get)
+    finally:
+        con.close()
+
+
+def _blank_opencode_session():
+    return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
+            "asst": 0, "user": 0, "tools": 0, "cost": 0.0}
 
 
 # ===========================================================================
@@ -1174,7 +1410,22 @@ def discover():
     for db in CURSOR_DBS:
         if os.path.exists(db):
             out.append(("cursor", db, "Cursor"))
-    # opencode: one session = one directory of msg_*.json files
+    # opencode: current versions keep everything in opencode.db; older versions
+    # used storage/message/<session>/msg_*.json. Discover both so upgrades and
+    # legacy installs are both covered.
+    seen_db_inodes = set()
+    for db in OPENCODE_DBS:
+        if not os.path.exists(db):
+            continue
+        try:
+            st = os.stat(db)
+            inode = (st.st_dev, st.st_ino)
+        except Exception:
+            continue
+        if inode in seen_db_inodes:
+            continue
+        seen_db_inodes.add(inode)
+        out.append(("opencode", db, "opencode"))
     for root in OPENCODE_ROOTS:
         for d in glob.glob(os.path.join(root, "storage", "message", "*")):
             if os.path.isdir(d):
@@ -1239,7 +1490,28 @@ def update_file(agg, source, path, editor_hint, proj_map):
         return fresh
 
     if source == "opencode":
-        # a directory of msg_*.json for one session; re-parse when it changes
+        if path.endswith(".db"):
+            # current opencode: a single SQLite DB for all sessions. Re-parse when
+            # the DB or its WAL changes; parse_opencode_db builds its own session
+            # list so don't run the generic _finalize_session over the top.
+            wal = path + "-wal"
+            wal_size = os.path.getsize(wal) if os.path.exists(wal) else 0
+            wal_mtime = os.path.getmtime(wal) if os.path.exists(wal) else 0
+            sig = [size, mtime, wal_size, wal_mtime]
+            if agg and agg.get("_sig") == sig:
+                return agg
+            fresh = _blank_agg(source, path)
+            fresh["editor"] = editor_hint
+            fresh["size"] = size + wal_size
+            try:
+                parse_opencode_db(fresh, path)
+            except Exception:
+                pass
+            fresh["_sig"] = sig
+            fresh["mtime"] = max(mtime, wal_mtime)
+            return fresh
+
+        # older opencode: a directory of msg_*.json for one session
         msgs = sorted(glob.glob(os.path.join(path, "msg_*.json")))
         try:
             sig_mtime = max((os.path.getmtime(m) for m in msgs), default=0.0)
