@@ -764,88 +764,181 @@ def parse_gemini(agg, path):
 # ===========================================================================
 # CURSOR  (native AI chat bubbles in a SQLite key-value store)
 # ===========================================================================
+# Home-relative source dirs on any OS: /Users/x/... (macOS), /home/x/... (Linux)
+# and C:\Users\x\... (Windows). Either separator, either drive — a Cursor DB can
+# be read on a different machine than the one that wrote it.
+_CURSOR_PATH_RE = re.compile(
+    r'(?:/Users/|/home/|[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2})[^/\\"]+[\\/]{1,2}'
+    r'(?:Documents[\\/]{1,2}GitHub|Documents|Desktop|repos?|code|dev|projects|src|work)'
+    r'[\\/]{1,2}([^/\\"\s]+)', re.I)
+
+
+def _normalize_cursor_model(raw):
+    """Cursor names models its own way ("claude-4.6-opus-high-thinking",
+    "gpt-5-nano", "composer-1"). Map them onto the display names every other
+    source already uses so one model reads the same everywhere."""
+    if not raw:
+        return "Cursor (default)"
+    first = str(raw).split(",")[0].strip()          # multi-model sessions list them
+    if not first or first == "default":
+        return "Cursor (default)"
+    base = re.sub(r"-(?:high-)?(?:thinking|reasoning|max|fast)$", "", first.lower())
+    m = re.match(r"claude-(\d+(?:\.\d+)?)-(opus|sonnet|haiku)$", base)
+    if m:
+        return f"Claude {m.group(2).capitalize()} {m.group(1)}"
+    if base.startswith("composer"):
+        n = base.split("-", 1)[1] if "-" in base else ""
+        return ("Cursor Composer " + n).strip()
+    canon = _canonicalize(base)
+    return canon or first
+
+
+def _cursor_ai_lines(con):
+    """Cursor's own AI-code accounting: lines it suggested vs. lines you kept,
+    per day, split by tab-completion and composer. No other tool records this."""
+    out = {}
+    try:
+        rows = con.execute(
+            "SELECT key, value FROM ItemTable WHERE key LIKE 'aiCodeTracking.dailyStats%'"
+        ).fetchall()
+    except Exception:
+        return out
+    for _k, v in rows:
+        try:
+            o = json.loads(v)
+        except Exception:
+            continue
+        d = o.get("date")
+        if not d:
+            continue
+        out[d] = {
+            "tab_suggested": int(o.get("tabSuggestedLines", 0) or 0),
+            "tab_accepted": int(o.get("tabAcceptedLines", 0) or 0),
+            "composer_suggested": int(o.get("composerSuggestedLines", 0) or 0),
+            "composer_accepted": int(o.get("composerAcceptedLines", 0) or 0),
+        }
+    return out
+
+
 def parse_cursor(agg, db_path):
     import sqlite3
     agg["source"] = "cursor"
     agg["editor"] = "Cursor"
     agg["project"] = "Cursor"
-    model = "Cursor"
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
     except Exception:
         return
     cur = con.cursor()
-    # composerId -> session timestamps (bubbles carry no timestamp of their own)
+
+    def _loads(v):
+        try:
+            return json.loads(v) if v else None
+        except Exception:
+            return None
+
+    # ---- session metadata -------------------------------------------------
+    # composerData holds most sessions; newer Cursor builds migrate the header
+    # into its own table, so read both and let composerData win on conflicts.
     comp = {}
     try:
-        for (v,) in cur.execute("SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"):
-            try:
-                o = json.loads(v)
-            except Exception:
-                continue
-            cid = o.get("composerId")
-            created = o.get("createdAt") or o.get("lastUpdatedAt")
-            if cid and created:
-                comp[cid] = {"created": created,
-                             "updated": o.get("lastUpdatedAt") or created,
-                             "name": o.get("name") or o.get("title")}
+        for cid, created, updated, archived, val in cur.execute(
+                "SELECT composerId, createdAt, lastUpdatedAt, isArchived, value "
+                "FROM composerHeaders").fetchall():
+            o = _loads(val) or {}
+            comp[cid] = {"created": created, "updated": updated or created,
+                         "name": o.get("name") or o.get("subtitle"),
+                         "model": None, "maxmode": False,
+                         "mode": o.get("unifiedMode"),
+                         "added": int(o.get("totalLinesAdded") or 0),
+                         "removed": int(o.get("totalLinesRemoved") or 0),
+                         "archived": bool(archived or o.get("isArchived")),
+                         "subs": int(o.get("numSubComposers") or 0)}
+    except Exception:
+        pass                                    # table absent on older builds
+    try:
+        rows = cur.execute("SELECT value FROM cursorDiskKV "
+                           "WHERE key LIKE 'composerData:%'").fetchall()
     except Exception:
         con.close()
         return
+    for (v,) in rows:
+        o = _loads(v)
+        if not o:
+            continue
+        cid = o.get("composerId")
+        created = o.get("createdAt") or o.get("lastUpdatedAt")
+        if not cid or not created:
+            continue
+        mc = o.get("modelConfig") if isinstance(o.get("modelConfig"), dict) else {}
+        c = comp.setdefault(cid, {})
+        c.update({
+            "created": created,
+            "updated": o.get("lastUpdatedAt") or created,
+            "name": o.get("name") or c.get("name"),
+            "model": mc.get("modelName"),
+            "maxmode": bool(mc.get("maxMode")),
+            "mode": o.get("unifiedMode") or c.get("mode"),
+            "added": int(o.get("totalLinesAdded") or 0),
+            "removed": int(o.get("totalLinesRemoved") or 0),
+            "archived": bool(o.get("isArchived")),
+            "subs": len(o.get("subComposerIds") or []) or c.get("subs", 0),
+        })
+
     sess = {}
-    # infer the repo/project name from any absolute path in a bubble
-    # Home-relative source dirs on any OS: /Users/x/... (macOS), /home/x/...
-    # (Linux) and C:\\Users\\x\\... (Windows). Either separator, either drive.
-    path_re = re.compile(
-        r'(?:/Users/|/home/|[A-Za-z]:[\\\\/]{1,2}Users[\\\\/]{1,2})[^/\\\\"]+[\\\\/]{1,2}'
-        r'(?:Documents[\\\\/]{1,2}GitHub|Documents|Desktop|repos?|code|dev|projects|src|work)'
-        r'[\\\\/]{1,2}([^/\\\\"\\s]+)', re.I)
+    path_re = _CURSOR_PATH_RE
 
     def _top(d):
         return max(d, key=d.get) if d else None
 
+    # ---- messages ---------------------------------------------------------
     try:
-        rows = cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'")
+        rows = cur.execute("SELECT key, value FROM cursorDiskKV "
+                           "WHERE key LIKE 'bubbleId:%'")
         for k, v in rows:
             kp = k.split(":")
             cid = kp[1] if len(kp) >= 3 else None
             c = comp.get(cid)
             if not c:
                 continue
-            try:
-                o = json.loads(v)
-            except Exception:
+            o = _loads(v)
+            if not o:
                 continue
             typ = o.get("type")            # 1 = user, 2 = AI
             tc = o.get("tokenCount") or {}
             it = int(tc.get("inputTokens", 0) or 0)
             ot = int(tc.get("outputTokens", 0) or 0)
-            dt = _from_ms(c["created"])
+            # Messages carry their own ISO timestamp; only fall back to the
+            # session's creation time when one is genuinely missing, otherwise
+            # a months-long session lands entirely on the day it started.
+            dt = _from_iso(o["createdAt"]) if isinstance(o.get("createdAt"), str) else None
+            if dt is None:
+                dt = _from_ms(c["created"])
             if not dt:
                 continue
             date = _buckets(dt)[0]
+            model = _normalize_cursor_model(c.get("model"))
             r = _rec(agg, date, model)
             r["in"] += it
             r["out"] += ot
             T = agg["totals"]
             T["in"] += it
             T["out"] += ot
-            if typ == 2:
-                r["asst"] += 1
-                T["asst"] += 1
-            elif typ == 1:
-                r["user"] += 1
-                T["user"] += 1
             s = sess.setdefault(cid, {"in": 0, "out": 0, "asst": 0, "user": 0, "tools": 0,
-                                      "proj": {},
-                                      "start": dt.isoformat(),
-                                      "end": (_from_ms(c["updated"]) or dt).isoformat()})
+                                      "think": 0, "proj": {},
+                                      "start": dt.isoformat(), "end": dt.isoformat()})
+            iso = dt.isoformat()
+            if iso < s["start"]:
+                s["start"] = iso
+            if iso > s["end"]:
+                s["end"] = iso
             s["in"] += it
             s["out"] += ot
             if typ == 2:
-                s["asst"] += 1
+                r["asst"] += 1; T["asst"] += 1; s["asst"] += 1
             elif typ == 1:
-                s["user"] += 1
+                r["user"] += 1; T["user"] += 1; s["user"] += 1
+            s["think"] += int(o.get("thinkingDurationMs") or 0)
             # tool calls — Cursor persists each as toolFormerData on the bubble
             tf = o.get("toolFormerData")
             if isinstance(tf, dict):
@@ -860,9 +953,9 @@ def parse_cursor(agg, db_path):
                 fv = o.get(fld)
                 if fv:
                     for m in path_re.finditer(json.dumps(fv)):
-                        p = m.group(1)
-                        s["proj"][p] = s["proj"].get(p, 0) + 1
+                        s["proj"][m.group(1)] = s["proj"].get(m.group(1), 0) + 1
             _bump_time(agg, dt, it + ot, 1 if typ == 2 else 0)
+        agg["state"]["ai_lines"] = _cursor_ai_lines(con)
     finally:
         con.close()
 
@@ -874,14 +967,25 @@ def parse_cursor(agg, db_path):
             tally[p] = tally.get(p, 0) + 1
     agg["project"] = _top(tally) or "Cursor"
 
-    agg["sessions"] = [{
-        "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
-        "title": (comp.get(cid) or {}).get("name"),
-        "project": _top(s["proj"]) or "Cursor",
-        "model": model, "start": s["start"], "end": s["end"],
-        "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
-        "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0, "tools": s["tools"],
-    } for cid, s in sess.items()]
+    out = []
+    for cid, s in sess.items():
+        c = comp.get(cid, {})
+        mode = {1: "chat", 2: "agent"}.get(c.get("mode"), c.get("mode"))
+        out.append({
+            "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
+            "title": c.get("name"),
+            "project": _top(s["proj"]) or "Cursor",
+            "model": _normalize_cursor_model(c.get("model")),
+            "start": s["start"], "end": s["end"],
+            "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
+            "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0,
+            "tools": s["tools"], "side": 0,
+            "mode": ("max " + mode) if (mode and c.get("maxmode")) else mode,
+            "lines_add": c.get("added", 0), "lines_del": c.get("removed", 0),
+            "think_ms": s["think"], "subagents": c.get("subs", 0),
+            "archived_session": bool(c.get("archived")),
+        })
+    agg["sessions"] = out
 
 
 # ===========================================================================
@@ -957,7 +1061,19 @@ def parse_opencode(agg, session_dir, msg_files):
         if not dt or not (inp or out or cr or cw):
             continue
         date = _buckets(dt)[0]
+        # tool invocations ride along as typed parts on the message; the shape has
+        # moved between opencode versions, so accept either spelling defensively
+        ntools = 0
+        for part in (o.get("parts") or o.get("content") or []):
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") in ("tool", "tool-invocation", "tool_use", "tool-call"):
+                name = (part.get("tool") or part.get("name")
+                        or (part.get("toolInvocation") or {}).get("toolName") or "tool")
+                _tool(agg, date, str(name))
+                ntools += 1
         r = _rec(agg, date, model)
+        r["tools"] += ntools
         r["in"] += inp; r["out"] += out; r["reason"] += reason
         r["cr"] += cr; r["cc"] += cw; r["cc5"] += cw  # untiered cache write -> 5m rate
         r["asst"] += 1

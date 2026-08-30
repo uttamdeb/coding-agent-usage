@@ -53,6 +53,21 @@ order IS the safety mechanism. If you reorder tools or change a hue, re-validate
 sequence before shipping (the data-viz skill's `validate_palette.js`), and keep the legend +
 tooltips (identity must never be colour-alone).
 
+## Per-source quirks worth knowing
+- **Cursor** (`state.vscdb`): sessions live in `cursorDiskKV` under `composerData:*`
+  (and, on newer builds, the `composerHeaders` table); messages are `bubbleId:*`.
+  Each bubble has its OWN ISO `createdAt` — use it, not the session's, or a
+  months-long session lands entirely on the day it started. `modelConfig.modelName`
+  gives the model ("claude-4.6-opus-high-thinking", "composer-1", "default"),
+  `unifiedMode` gives chat/agent, and `ItemTable` holds
+  `aiCodeTracking.dailyStats.*` — suggested vs. accepted AI lines per day, which
+  no other tool records. Only ~2% of bubbles carry token counts; that is Cursor,
+  not a parsing gap.
+- **Copilot** logs no tokens at all. It DOES log a premium-request multiplier in
+  `result.details` ("... • 1x"); that is its real billing unit.
+- **Gemini CLI** is deliberately not parsed — re-verified: its `chats/*.jsonl` still
+  persist only session bookkeeping, no prompts/tokens/model.
+
 ## Sources covered
 Claude Code (`~/.claude/projects`), Claude Desktop agent mode, Codex (`~/.codex/sessions`),
 GitHub Copilot (VS Code/Insiders/Cursor `chatSessions`), Cursor native AI (`state.vscdb`),

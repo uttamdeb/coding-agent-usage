@@ -505,6 +505,18 @@ function viewTools(d){
     {l:"MCP calls",v:fmtNum(mcp.reduce((a,x)=>a+x.count,0)),s:`${mcp.length} MCP tools`},
     {l:"Web lookups",v:fmtNum(web),s:"search / fetch calls"},
   ];
+  // Copilot bills in premium requests, not tokens — its one exact usage number
+  const prem = d.recs.reduce((a,r)=>a+(r.prem||0),0);
+  if(prem) stats.push({l:"Premium requests",v:fmtNum(Math.round(prem)),
+    s:"Copilot's billing unit"});
+  // Cursor is the only tool that records how much of its output you kept
+  const al=(RAW.ai_lines||[]).filter(x=>x.date>=d.r.from&&x.date<=d.r.to);
+  if(al.length){
+    const acc=al.reduce((a,x)=>a+x.tab_accepted+x.composer_accepted,0);
+    const sug=al.reduce((a,x)=>a+x.tab_suggested+x.composer_suggested,0);
+    stats.push({l:"AI lines kept",v:fmtNum(acc),
+      s:sug?`${fmtPct(acc/sug)} of ${fmtNum(sug)} suggested · Cursor`:"Cursor"});
+  }
   document.getElementById("agentStats").innerHTML = stats.map(x=>
     `<div class="stat"><div class="l">${x.l}</div><div class="v num">${x.v}</div><div class="s">${x.s}</div></div>`).join("");
 
@@ -651,6 +663,12 @@ function openSession(i){
     ${row("Your prompts",fmtNum(s.user))}
     ${row("Assistant msgs",fmtNum(s.asst||s.req))}
     ${row("Tool calls",fmtNum(s.tools))}
+    ${row("Mode",s.mode?esc(s.mode):null)}
+    ${row("Premium requests",s.prem?fmtNum(Math.round(s.prem)):null)}
+    ${row("Lines added",s.lines_add?fmtNum(s.lines_add):null)}
+    ${row("Lines removed",s.lines_del?fmtNum(s.lines_del):null)}
+    ${row("Thinking time",s.think_ms?Math.round(s.think_ms/1000)+"s":null)}
+    ${row("Subagents",s.subagents?fmtNum(s.subagents):null)}
     ${row("Subagent tokens",s.side?fmtNum(s.side):null)}
     ${row("Log size",s.bytes?fmtBytes(s.bytes):null)}
     ${s.archived?'<div class="warnbar" style="margin-top:12px">This log has been pruned from disk; its numbers are retained from an earlier scan.</div>':""}
