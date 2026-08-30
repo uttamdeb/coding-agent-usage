@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 23
+CACHE_VERSION = 24
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -170,9 +170,40 @@ def build_payload():
                                              "composer_suggested": 0, "composer_accepted": 0})
             for f in slot:
                 slot[f] += v.get(f, 0)
+        # Per-session, per-day breakdown so the Sessions table can report what a
+        # session did INSIDE the selected range rather than over its whole life.
+        # For every source except Cursor one file is one session, so the file's
+        # own date-keyed records already are that breakdown; Cursor builds its
+        # own while parsing because one store holds many sessions.
+        file_days = {}
+        for key, r in agg.get("records", {}).items():
+            date, model = key.split("\t", 1)
+            dd = file_days.setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                             "asst": 0, "user": 0, "tools": 0,
+                                             "prem": 0.0, "cost": 0.0})
+            if model == "(user)":
+                dd["user"] += r.get("user", 0)
+                continue
+            for f in ("in", "out", "cr", "cc", "asst", "user", "tools"):
+                dd[f] += r.get(f, 0)
+            dd["prem"] += r.get("prem", 0.0)
+            dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
+                                r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date)
+
         # sessions
         for s in agg.get("sessions", []):
             s2 = dict(s)
+            own = s.get("days")
+            if own:                       # Cursor: price its own per-day split
+                days = {}
+                for date, v in own.items():
+                    days[date] = dict(v, cost=_cost(source, s["model"], v["in"], v["out"],
+                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date))
+            else:
+                days = file_days
+            s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],
+                              v["asst"], v["user"], v["tools"], round(v.get("prem", 0), 4)]
+                          for d, v in sorted(days.items())}
             # `archived` is stamped on the aggregate by refresh() after the parse,
             # so read it from the aggregate rather than the frozen session copy
             s2["archived"] = bool(agg.get("archived"))
