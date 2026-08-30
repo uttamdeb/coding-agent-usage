@@ -1209,9 +1209,12 @@ function findCacheWaste(d){
    Nothing here is a hardcoded model list. The candidate replacements are the models
    THIS user actually ran, priced from the rates the server sent, so it stays true as
    models come and go and reflects what they realistically have access to. */
-function priceOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
+/* NB: a global priceOf() already exists above (RAW.pricing, zero-tuple fallback).
+   This one is deliberately separate — it returns null for an unpriced model so the
+   savings math can skip it rather than quietly costing it at zero. */
+function rateOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
 function costAt(m, t){
-  const p = priceOf(m); if(!p) return null;
+  const p = rateOf(m); if(!p) return null;
   const [pin,pout,pcw5,pcw1,pcr] = p;
   return ((t.in||0)*pin + (t.out||0)*pout + (t.cr||0)*pcr
         + (t.cc5||t.cc||0)*pcw5 + (t.cc1||0)*pcw1) / 1e6;
@@ -1219,13 +1222,13 @@ function costAt(m, t){
 /* The cheapest model the user ALSO used from the same vendor — a realistic swap,
    not a recommendation to adopt something they've never touched. */
 function cheaperPeer(model, usedModels){
-  const p = priceOf(model); if(!p || !p[1]) return null;
+  const p = rateOf(model); if(!p || !p[1]) return null;
   const vendor = (RAW.model_vendor||{})[model];
   let best=null, bestOut=p[1];
   for(const m of usedModels){
     if(m===model) continue;
     if((RAW.model_vendor||{})[m] !== vendor) continue;
-    const q = priceOf(m);
+    const q = rateOf(m);
     if(q && q[1] && q[1] < bestOut){ bestOut=q[1]; best=m; }
   }
   return best;
