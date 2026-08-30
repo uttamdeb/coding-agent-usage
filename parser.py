@@ -12,7 +12,7 @@ Mac/Linux install of the same tools.
 
 No third-party dependencies — stdlib only.
 """
-import os, json, glob, re, time
+import os, sys, json, glob, re, time
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -1229,7 +1229,9 @@ def parse_opencode_db(agg, db_path):
                             text = part.get("text", "")
                             break
                     if text:
-                        _set_title(agg, text, weak=True)
+                        # kind="prompt" is the lowest title rank, so a real
+                        # session title from the DB still wins over this.
+                        _set_title(agg, text)
                         meta["_weak_title_set"] = True
                 s = sess.setdefault(sid, _blank_opencode_session())
                 if "end" not in s or dt.isoformat() > s["end"]:
@@ -1505,8 +1507,11 @@ def update_file(agg, source, path, editor_hint, proj_map):
             fresh["size"] = size + wal_size
             try:
                 parse_opencode_db(fresh, path)
-            except Exception:
-                pass
+            except Exception as e:
+                # Keep a bad DB from taking the whole refresh down, but never
+                # fail silently: a swallowed error here looks identical to
+                # "you don't use opencode".
+                sys.stderr.write(f"[opencode] {path}: {type(e).__name__}: {e}\n")
             fresh["_sig"] = sig
             fresh["mtime"] = max(mtime, wal_mtime)
             return fresh
