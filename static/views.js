@@ -637,7 +637,8 @@ function viewSessions(d){
       <td class="dim">${s.when?s.when.slice(0,16).replace("T"," "):"—"}</td>
       <td>${srcBadge(s.source)}</td>
       <td class="name" title="${esc(s.title||"")}">${
-        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures shown cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${esc(s.name)}</td>
+        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures shown cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${
+        s.subagent?`<span class="sub-badge" title="A subagent transcript — work this session's parent delegated to a Task agent.">sub</span>`:""}${esc(s.name)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
       <td class="num r">${fmtTok(s.tok)}</td><td class="num r">${fmtUSD(s.cost)}</td>
@@ -785,9 +786,11 @@ function renderSettings(cfg){
 
     <h2 class="stg-h" style="margin-top:26px">Analytics cache</h2>
     <div class="stg-note">This dashboard's own parsed data &mdash;
-      <b>${fmtBytes(cfg.cache_bytes||0)}</b> across ${fmtNum(cfg.cache_files||0)} files.
-      Rebuilding re-reads every log from scratch; deleting removes the file, which is
-      where your prompts, project names and costs live.</div>
+      <b>${fmtBytes(cfg.cache_bytes||0)}</b> across ${fmtNum(cfg.cache_files||0)} files:
+      your prompts, project names and costs. <b>Rebuild</b> re-reads every log from
+      scratch. <b>Delete</b> removes the file now, but the next refresh writes it again
+      from whatever logs are still on disk &mdash; to keep it gone, stop
+      <code>dashboard.py</code> first.</div>
     <div class="stg-note" style="border-left-color:var(--bad)">Both discard the
       <b>durable ledger</b>: sessions whose logs a tool has already deleted exist only in
       this cache, and nothing can bring them back. Your totals will drop by whatever those
@@ -857,8 +860,9 @@ function renderSettings(cfg){
     "Rebuild the analytics cache?\n\nEvery log is re-read from scratch. Sessions whose logs "
     +"a tool has already deleted cannot be recovered and will disappear from your totals."));
   document.getElementById("cacheDelete").addEventListener("click",()=>cacheDo("delete",
-    "Delete the analytics cache?\n\nThis removes the file containing your parsed prompts, "
-    +"projects and costs. Sessions whose logs are already gone from disk are lost permanently."));
+    "Delete the analytics cache?\n\nThe file is removed now, but a running server "
+    +"rewrites it on the next refresh from logs still on disk. What does NOT come back: "
+    +"sessions whose logs a tool already deleted."));
 
   const pwaBtn=document.getElementById("pwaBtn");
   if(pwaBtn && pwaSupported()) pwaBtn.addEventListener("click",async()=>{

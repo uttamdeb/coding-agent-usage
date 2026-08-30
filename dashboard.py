@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 26
+CACHE_VERSION = 27
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -29,6 +29,10 @@ _lock = threading.Lock()
 _state = {"files": {}, "version": CACHE_VERSION}
 _meta = {"last_refresh": 0.0, "last_duration": 0.0, "files": 0, "building": False}
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
+# Only one refresh at a time: the background timer and the Rebuild button can now
+# collide, and `gone = [p for p in files ...]` iterating while another thread
+# inserts raises "dictionary changed size during iteration".
+_refresh_lock = threading.Lock()
 
 
 def load_cache():
@@ -54,6 +58,11 @@ def save_cache():
 
 def refresh(verbose=False):
     """Scan all sources and incrementally update changed files."""
+    with _refresh_lock:
+        return _refresh_locked(verbose)
+
+
+def _refresh_locked(verbose=False):
     t0 = time.time()
     _meta["building"] = True
     proj_map = P._copilot_project_map()
@@ -219,6 +228,7 @@ def build_payload():
             # `archived` is stamped on the aggregate by refresh() after the parse,
             # so read it from the aggregate rather than the frozen session copy
             s2["archived"] = bool(agg.get("archived"))
+            s2["subagent"] = bool(s.get("subagent"))
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
                                (s.get("end") or s.get("start") or "")[:10],
@@ -355,6 +365,11 @@ def _extras():
 
 
 IS_WINDOWS = os.name == "nt"
+
+# What the server actually bound to, filled in by main(). The CSRF guard compares
+# the Host header against THIS, never against Host itself — see _csrf_ok.
+BIND = {"host": "127.0.0.1", "port": 7878}
+LOOPBACK = {"127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0"}
 
 # ---------------------------------------------------------------------------
 # Settings — lets the dashboard edit the *tool's own* config, not its own.
@@ -693,14 +708,26 @@ class Handler(BaseHTTPRequestHandler):
         site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
         if site and site not in ("same-origin", "none"):
             return False
+
+        # The Host header is attacker-controlled. A DNS-rebinding page served from
+        # evil.example, resolved to 127.0.0.1, arrives with Host AND Origin both
+        # "evil.example" — so deriving the allowed origin FROM Host lets it match
+        # itself and walk straight through. Pin to what we actually bound instead.
+        host, _, port = (self.headers.get("Host") or "").partition(":")
+        host = host.strip().lower()
+        bound_host = str(BIND["host"]).strip().lower()
+        if host not in LOOPBACK and host != bound_host:
+            return False
+        if port and str(port) != str(BIND["port"]):
+            return False
+
         origin = self.headers.get("Origin")
         if origin:
-            allowed = {f"http://{self.headers.get('Host', '')}"}
-            host, _, port = (self.headers.get("Host") or "").partition(":")
-            if host in ("127.0.0.1", "localhost", "[::1]", "::1") and port:
-                allowed |= {f"http://127.0.0.1:{port}", f"http://localhost:{port}",
-                            f"http://[::1]:{port}"}
-            if origin not in allowed:
+            p = BIND["port"]
+            allowed = set()
+            for h in ("127.0.0.1", "localhost", "[::1]", bound_host):
+                allowed |= {f"http://{h}:{p}", f"https://{h}:{p}", f"http://{h}", f"https://{h}"}
+            if origin.strip().lower() not in allowed:
                 return False
         return True
 
@@ -769,6 +796,7 @@ def main():
 
     threading.Thread(target=background_refresher, args=(args.interval,), daemon=True).start()
 
+    BIND.update(host=args.host, port=args.port)
     srv = Server((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     sys.stderr.write(f"\n  ✦ AI Usage Dashboard live at  {url}\n")

@@ -448,6 +448,13 @@ def _first_text(content):
 # ===========================================================================
 # CLAUDE CODE
 # ===========================================================================
+def _is_subagent_path(path):
+    """Claude Code writes each subagent's transcript to
+    <session-id>/subagents/agent-<id>.jsonl. Those files are 100% isSidechain."""
+    p = str(path or "").replace("\\", "/")
+    return "/subagents/" in p and _leaf(p).startswith("agent-")
+
+
 def parse_claude(agg, lines):
     project = agg["project"]
     model_tokens = {}
@@ -521,7 +528,11 @@ def parse_claude(agg, lines):
                 r = _rec(agg, _buckets(dt)[0], "(user)")
                 r["user"] += 1
                 agg["totals"]["user"] += 1
-                if not side:
+                # Normally a sidechain turn is a subagent talking inside a parent
+                # session and must not retitle it. But a subagents/agent-*.jsonl file
+                # is nothing BUT sidechain, so its first prompt is the task it was
+                # given — without this the row has no title at all.
+                if not side or agg.get("subagent"):
                     _set_title(agg, _first_text(content), "prompt")
 
     agg["project"] = project
@@ -1747,6 +1758,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
     lines, new_offset = _read_new_bytes(path, offset)
     if lines:
         if source in ("claude", "claude-desktop"):
+            agg["subagent"] = _is_subagent_path(path)
             parse_claude(agg, lines)
         elif source == "copilot":
             parse_copilot_jsonl(agg, lines)
@@ -1787,6 +1799,7 @@ def _finalize_session(agg, source, path):
     agg["sessions"] = [{
         "id": base[:8],
         "source": source,
+        "subagent": bool(agg.get("subagent")),
         "editor": agg.get("editor"),
         "project": agg.get("project"),
         "model": dom,
