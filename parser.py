@@ -388,23 +388,29 @@ def _clean_prompt(text):
     return ""
 
 
-def _set_title(agg, text, weak=False):
-    """Record a session title. A strong title (one the tool itself named the
-    session) always wins; a weak one (first user prompt) only fills a blank."""
-    if weak:
+# Title sources, weakest to strongest. Tools APPEND a new title record every
+# time the session is re-titled, so within a rank the LAST one seen wins —
+# otherwise a session keeps the first name it was ever auto-given and a manual
+# rename is silently ignored.
+TITLE_RANK = {"prompt": 1, "ai": 2, "custom": 3}
+
+
+def _set_title(agg, text, kind="prompt"):
+    rank = TITLE_RANK.get(kind, 1)
+    if kind == "prompt":
         text = _clean_prompt(text)
     if not text:
         return
     t = " ".join(str(text).split())[:90]
     if not t:
         return
-    if weak and agg.get("title"):
-        return
-    if not weak and agg.get("_strong_title"):
-        return
+    have = agg.get("_title_rank", 0)
+    if rank < have:
+        return                      # never let a weaker source overwrite
+    if kind == "prompt" and agg.get("title"):
+        return                      # the FIRST prompt, not the latest
     agg["title"] = t
-    if not weak:
-        agg["_strong_title"] = True
+    agg["_title_rank"] = rank
 
 
 def _first_text(content):
@@ -446,9 +452,9 @@ def parse_claude(agg, lines):
             agg["cliver"] = o["version"]
         # the tool's own name for the session beats a prompt snippet
         if o.get("customTitle"):
-            _set_title(agg, o["customTitle"])
+            _set_title(agg, o["customTitle"], "custom")
         elif o.get("aiTitle"):
-            _set_title(agg, o["aiTitle"])
+            _set_title(agg, o["aiTitle"], "ai")
         side = bool(o.get("isSidechain"))
         msg = o.get("message") if isinstance(o.get("message"), dict) else None
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
@@ -497,7 +503,7 @@ def parse_claude(agg, lines):
                 r["user"] += 1
                 agg["totals"]["user"] += 1
                 if not side:
-                    _set_title(agg, _first_text(content), weak=True)
+                    _set_title(agg, _first_text(content), "prompt")
 
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
@@ -577,8 +583,7 @@ def parse_codex(agg, lines):
                 if dt:
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
-                    _set_title(agg, pl.get("message") or _first_text(pl.get("content")),
-                               weak=True)
+                    _set_title(agg, pl.get("message") or _first_text(pl.get("content")), "prompt")
             elif pt in ("web_search_call", "web_search_end"):
                 if pt == "web_search_call" and dt:
                     _tool(agg, _buckets(dt)[0], "web_search")
@@ -638,7 +643,7 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     msg = r.get("message") or {}
     in_chars = len(msg.get("text", "")) if isinstance(msg, dict) else 0
     if isinstance(msg, dict) and msg.get("text"):
-        _set_title(agg, msg["text"], weak=True)
+        _set_title(agg, msg["text"], "prompt")
     out_chars = _copilot_text_len(r.get("response"))
     est_in = in_chars // 4
     est_out = out_chars // 4
@@ -973,7 +978,7 @@ def parse_cursor(agg, db_path):
         mode = {1: "chat", 2: "agent"}.get(c.get("mode"), c.get("mode"))
         out.append({
             "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
-            "title": c.get("name"),
+            "title": c.get("name"),   # Cursor stores the current name
             "project": _top(s["proj"]) or "Cursor",
             "model": _normalize_cursor_model(c.get("model")),
             "start": s["start"], "end": s["end"],
@@ -1106,6 +1111,17 @@ def _read_new_bytes(path, offset):
     return text.splitlines(), new_offset
 
 
+def _uri_to_path(uri):
+    """file:///Users/me/My%20Repo -> /Users/me/My Repo (also passes plain paths)."""
+    from urllib.parse import unquote, urlparse
+    if not uri:
+        return ""
+    if uri.startswith("file://"):
+        pr = urlparse(uri)
+        return unquote(pr.path)
+    return unquote(uri)
+
+
 def _copilot_project_map():
     """Map workspaceStorage hash -> friendly workspace folder name."""
     m = {}
@@ -1113,12 +1129,27 @@ def _copilot_project_map():
         for wj in glob.glob(os.path.join(root, "User", "workspaceStorage", "*", "workspace.json")):
             try:
                 o = json.load(open(wj))
-                folder = o.get("folder") or o.get("workspace") or ""
-                name = os.path.basename(folder.rstrip("/")) if folder else None
-                if name:
-                    m[os.path.dirname(wj)] = name
             except Exception:
-                pass
+                continue
+            path = _uri_to_path(o.get("folder") or o.get("workspace") or "")
+            if not path:
+                continue
+            name = _leaf(path)
+            # A MULTI-ROOT window stores a pointer to a workspace *file*, whose
+            # basename is literally "workspace.json" — read it for the real roots.
+            if name in ("workspace.json",) or path.endswith(".code-workspace"):
+                try:
+                    wo = json.load(open(path))
+                    roots = [_leaf(_uri_to_path(f.get("path") or f.get("uri") or ""))
+                             for f in (wo.get("folders") or [])]
+                    roots = [r for r in roots if r]
+                    name = " + ".join(roots[:2]) + ("…" if len(roots) > 2 else "")
+                except Exception:
+                    name = ""
+                if not name:
+                    name = "(multi-root workspace)"
+            if name:
+                m[os.path.dirname(wj)] = name
     return m
 
 
