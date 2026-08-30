@@ -930,8 +930,11 @@ def parse_cursor(agg, db_path):
             T["in"] += it
             T["out"] += ot
             s = sess.setdefault(cid, {"in": 0, "out": 0, "asst": 0, "user": 0, "tools": 0,
-                                      "think": 0, "proj": {},
+                                      "think": 0, "proj": {}, "days": {},
                                       "start": dt.isoformat(), "end": dt.isoformat()})
+            dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                             "asst": 0, "user": 0, "tools": 0})
+            dd["in"] += it; dd["out"] += ot
             iso = dt.isoformat()
             if iso < s["start"]:
                 s["start"] = iso
@@ -940,9 +943,9 @@ def parse_cursor(agg, db_path):
             s["in"] += it
             s["out"] += ot
             if typ == 2:
-                r["asst"] += 1; T["asst"] += 1; s["asst"] += 1
+                r["asst"] += 1; T["asst"] += 1; s["asst"] += 1; dd["asst"] += 1
             elif typ == 1:
-                r["user"] += 1; T["user"] += 1; s["user"] += 1
+                r["user"] += 1; T["user"] += 1; s["user"] += 1; dd["user"] += 1
             s["think"] += int(o.get("thinkingDurationMs") or 0)
             # tool calls — Cursor persists each as toolFormerData on the bubble
             tf = o.get("toolFormerData")
@@ -951,7 +954,7 @@ def parse_cursor(agg, db_path):
                 if name:
                     _tool(agg, date, name)
                     r["tools"] += 1
-                    s["tools"] += 1
+                    s["tools"] += 1; dd["tools"] += 1
             # infer project from paths in the bubble's context fields
             for fld in ("attachedFolders", "attachedFoldersNew", "relevantFiles",
                         "recentlyViewedFiles", "gitDiffs", "context"):
@@ -984,7 +987,7 @@ def parse_cursor(agg, db_path):
             "start": s["start"], "end": s["end"],
             "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
             "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0,
-            "tools": s["tools"], "side": 0,
+            "tools": s["tools"], "side": 0, "days": s["days"],
             "mode": ("max " + mode) if (mode and c.get("maxmode")) else mode,
             "lines_add": c.get("added", 0), "lines_del": c.get("removed", 0),
             "think_ms": s["think"], "subagents": c.get("subs", 0),

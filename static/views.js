@@ -622,7 +622,8 @@ function viewSessions(d){
     sorted.map((s,i)=>`<tr class="clickable" data-sess="${i}">
       <td class="dim">${s.when?s.when.slice(0,16).replace("T"," "):"—"}</td>
       <td>${srcBadge(s.source)}</td>
-      <td class="name" title="${esc(s.title||"")}">${esc(s.name)}</td>
+      <td class="name" title="${esc(s.title||"")}">${
+        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures shown cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${esc(s.name)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
       <td class="num r">${fmtTok(s.tok)}</td><td class="num r">${fmtUSD(s.cost)}</td>
@@ -630,8 +631,10 @@ function viewSessions(d){
       <td class="num r">${fmtNum(s.tools)}</td>
       <td class="num r">${s.cache?fmtPct(s.cache):'<span class="dim">—</span>'}</td></tr>`).join("")+"</tbody>";
   const capped = RAW.sessions_total && RAW.sessions_total > RAW.sessions.length;
+  const clipped = rows.filter(x=>x.clipped).length;
   document.getElementById("sessHint").textContent =
-    `${fmtNum(rows.length)} sessions in range`
+    `${fmtNum(rows.length)} sessions active in range`
+    + (clipped?` · ${clipped} also ran outside it (◔ = figures cover the range only)`:"")
     + (rows.length>400?" · showing the top 400 by the current sort":"")
     + (capped?` · of the ${fmtNum(RAW.sessions_total)} most recent loaded`:"")
     + " · click a row for detail";
@@ -651,6 +654,8 @@ function openSession(i){
     ${row("Git branch",s.branch?esc(s.branch):null)}
     ${row("Entrypoint",s.entry?esc(s.entry):null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
+    ${s.clipped?`<div class="warnbar" style="margin:10px 0">Figures below cover the
+       selected range only — this session spans ${s.span} days in total.</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
     ${row("Est. cost",fmtUSD2(s.cost))}

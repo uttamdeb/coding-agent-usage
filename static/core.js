@@ -154,11 +154,37 @@ function slice(r){
   const recs = RAW.records.filter(x => passSrc(x.source) && passModel(x.model)
       && passProj(x.project) && x.date>=r.from && x.date<=r.to);
   const hourly = RAW.hourly.filter(x => passSrc(x.source) && x.date>=r.from && x.date<=r.to);
-  const sessions = RAW.sessions.filter(x => passSrc(x.source) && passProj(x.project)
-      && passModel(x.model) && (x.end||x.start||"").slice(0,10)>=r.from
-      && (x.end||x.start||"").slice(0,10)<=r.to);
+  const sessions = RAW.sessions
+    .filter(x => passSrc(x.source) && passProj(x.project) && passModel(x.model)
+                 && activeInRange(x, r))
+    .map(x => clipSession(x, r));
   return {recs, hourly, sessions, r};
 }
+/* A session is "in range" if it did anything inside it — not merely if it
+   ENDED there. A resumed rollout can span weeks. */
+function activeInRange(s, r){
+  const D = s.days;
+  if(D){ for(const d in D) if(d>=r.from && d<=r.to) return true; return false; }
+  const e = (s.end||s.start||"").slice(0,10);
+  return e>=r.from && e<=r.to;
+}
+/* Report what a session did INSIDE the range. Without this a session that ran
+   for seven weeks reports all seven weeks under a one-day filter. */
+function clipSession(s, r){
+  const D = s.days;
+  if(!D) return Object.assign({}, s, {span:1, clipped:false});
+  let cost=0,i=0,o=0,cr=0,cc=0,asst=0,user=0,tools=0,prem=0,inN=0,allN=0;
+  for(const d in D){
+    allN++;
+    if(d<r.from || d>r.to) continue;
+    const v=D[d]; inN++;
+    cost+=v[0]; i+=v[1]; o+=v[2]; cr+=v[3]; cc+=v[4];
+    asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0;
+  }
+  return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem,
+    req:asst, span:allN, clipped:inN<allN});
+}
+
 /* Tool-call rows carry a date + source but no project/model dimension, so the
    project / provider / model filters cannot apply to them — the UI says so. */
 function toolCounts(r){
