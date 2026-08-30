@@ -60,7 +60,7 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning) |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
-| **opencode** | `~/.local/share/opencode`, `%LOCALAPPDATA%\opencode`, `~/.opencode` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache) |
+| **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
@@ -175,6 +175,15 @@ and extend this from that file).
 `dashboard.py` (server + cache + cost + `/api/storage`) · `parser.py` (log parsers + pricing) ·
 `index.html` (shell) · `static/app.css` · `static/core.js` · `static/charts.js` ·
 `static/views.js` · `chart.umd.min.js` (vendored Chart.js) · `AGENTS.md` · `run.sh`.
+
+## Contributing
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the setup, the hard rules
+(stdlib only, nothing hardcoded, never commit your cache), how to add a tool source or
+a model price, and how to test a change. **[AGENTS.md](AGENTS.md)** is the architecture
+guide. Please read the note on setting your git email before your first commit.
+
+Found a security problem? See **[SECURITY.md](SECURITY.md)** — don't open a public issue.
 
 ## License
 
