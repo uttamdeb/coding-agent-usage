@@ -395,6 +395,9 @@ def build_settings():
         "claude_settings_exists": os.path.exists(CLAUDE_SETTINGS_PATH),
         "claude_cleanup_days": cur.get("cleanupPeriodDays"),
         "claude_cleanup_default": CLAUDE_CLEANUP_DEFAULT,
+        "cache_path": CACHE_PATH,
+        "cache_bytes": os.path.getsize(CACHE_PATH) if os.path.exists(CACHE_PATH) else 0,
+        "cache_files": len(_state["files"]),
     }
 
 
@@ -413,6 +416,38 @@ def save_claude_cleanup_days(value):
         data["cleanupPeriodDays"] = value
     _write_claude_settings(data)
     return build_settings()
+
+
+def cache_action(action):
+    """Rebuild or delete this app's OWN analytics cache (never a tool's logs).
+
+    Both discard the durable ledger: sessions whose logs a tool has already pruned
+    from disk exist ONLY in this cache, and nothing can bring them back. The UI
+    says so before either button is pressed.
+    """
+    if action not in ("rebuild", "delete"):
+        raise ValueError("action must be 'rebuild' or 'delete'")
+    with _lock:
+        had = len(_state["files"])
+        _state["files"] = {}
+    removed = False
+    if os.path.exists(CACHE_PATH):
+        try:
+            os.remove(CACHE_PATH)
+            removed = True
+        except OSError as e:
+            raise ValueError(f"could not delete the cache: {e}")
+    if action == "rebuild":
+        _dirty["v"] = True
+        refresh(verbose=False)
+        with _lock:
+            now = len(_state["files"])
+        return {"action": "rebuild", "dropped": had, "files": now,
+                "seconds": round(_meta["last_duration"], 1)}
+    # delete: leave the store empty; the next background refresh repopulates it
+    # from whatever logs are still on disk.
+    _dirty["v"] = False
+    return {"action": "delete", "dropped": had, "file_removed": removed}
 
 
 def _cleanup_targets():
@@ -671,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route == "/api/settings":
+        if route in ("/api/settings", "/api/cache"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -683,7 +718,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": "invalid JSON body"}))
                 return
             try:
-                result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
+                if route == "/api/cache":
+                    result = cache_action(body.get("action"))
+                else:
+                    result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))
             except ValueError as e:
                 self._send(400, json.dumps({"error": str(e)}))

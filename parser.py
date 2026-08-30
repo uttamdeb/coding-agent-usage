@@ -828,17 +828,40 @@ def _cursor_ai_lines(con):
     return out
 
 
+def _open_ro_sqlite(db_path):
+    """Open a tool's live SQLite store read-only, correctly, on any filesystem.
+
+    Neither flag alone is safe:
+      * `mode=ro` alone reads the -wal, so a tool that is RUNNING has its recent
+        activity visible — but SQLite must create a -shm alongside the db, so it
+        raises "attempt to write a readonly database" on read-only media.
+      * `immutable=1` needs no -shm and works there — but it tells SQLite the file
+        can never change, so it ignores the -wal entirely. While the tool is
+        running its newest sessions are invisible, or the open fails outright.
+    Prefer correctness, fall back to availability.
+    """
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro&busy_timeout=5000", uri=True)
+        # connect() is lazy — on read-only media it succeeds and only fails when a
+        # query forces the -shm to be created. Probe before trusting it.
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        return con
+    except sqlite3.Error:
+        try:
+            con.close()
+        except Exception:
+            pass
+        return sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+
+
 def parse_cursor(agg, db_path):
     import sqlite3
     agg["source"] = "cursor"
     agg["editor"] = "Cursor"
     agg["project"] = "Cursor"
     try:
-        # NOT immutable=1: that flag tells SQLite the file can never change, so it
-        # skips locking AND ignores the -wal. While Cursor is running, recent
-        # activity still sits in state.vscdb-wal and would be invisible — or the
-        # open would fail outright and be swallowed, reading as "no Cursor usage".
-        con = sqlite3.connect(f"file:{db_path}?mode=ro&busy_timeout=5000", uri=True)
+        con = _open_ro_sqlite(db_path)
     except Exception:
         return
     cur = con.cursor()
@@ -1163,7 +1186,7 @@ def parse_opencode_db(agg, db_path):
     sess = {}          # sid -> running totals
     model_tokens = {}
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro&busy_timeout=5000", uri=True)
+        con = _open_ro_sqlite(db_path)
     except Exception:
         return
     cur = con.cursor()

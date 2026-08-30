@@ -721,6 +721,18 @@ async function pwaDisable(){
   }
 }
 
+/* Refresh interval, in ms. 15s is the historical default; 0 = manual only. */
+const POLL_KEY="aiu.poll";
+const POLL_CHOICES=[["15000","15s"],["60000","1m"],["300000","5m"],["0","Manual"]];
+function pollMs(){
+  try{ const v=localStorage.getItem(POLL_KEY); return v===null?15000:Math.max(0,+v||0); }
+  catch(e){ return 15000; }
+}
+function setPollMs(v){
+  try{ localStorage.setItem(POLL_KEY,String(v)); }catch(e){}
+  applyPollInterval();
+}
+
 function renderSettings(cfg){
   const days=cfg.claude_cleanup_days, def=cfg.claude_cleanup_default;
   openDrawer(`
@@ -761,6 +773,31 @@ function renderSettings(cfg){
         : pwaWanted() ? "On \u2014 installable, shell cached" : "Off"}</span>
     </div>
     <div class="stg-msg" id="pwaMsg"></div>
+
+    <h2 class="stg-h" style="margin-top:26px">Refresh interval</h2>
+    <div class="stg-note">How often the page re-fetches <code>/api/data</code> (about
+      ${fmtBytes(cfg.cache_bytes||0)} of JSON each time). Slower saves CPU and disk churn;
+      <b>Manual</b> updates only when you press <b>&#8635;</b>. The server keeps parsing
+      either way &mdash; this is just how often the browser asks.</div>
+    <div class="seg" id="pollSeg" style="margin-top:14px">${
+      POLL_CHOICES.map(([v,l])=>`<button data-ms="${v}"${
+        String(pollMs())===v?' class="on"':''}>${l}</button>`).join("")}</div>
+
+    <h2 class="stg-h" style="margin-top:26px">Analytics cache</h2>
+    <div class="stg-note">This dashboard's own parsed data &mdash;
+      <b>${fmtBytes(cfg.cache_bytes||0)}</b> across ${fmtNum(cfg.cache_files||0)} files.
+      Rebuilding re-reads every log from scratch; deleting removes the file, which is
+      where your prompts, project names and costs live.</div>
+    <div class="stg-note" style="border-left-color:var(--bad)">Both discard the
+      <b>durable ledger</b>: sessions whose logs a tool has already deleted exist only in
+      this cache, and nothing can bring them back. Your totals will drop by whatever those
+      sessions contributed.</div>
+    <div class="stg-actions">
+      <button class="btn" id="cacheRebuild">Rebuild now</button>
+      <button class="btn" id="cacheDelete">Delete</button>
+    </div>
+    <div class="stg-msg" id="cacheMsg"></div>
+    <div class="stg-path"><b>Cache file</b><span>${esc(cfg.cache_path||"")}</span></div>
   `);
   const msgEl=document.getElementById("stgMsg");
   const msg=(t,cls)=>{ msgEl.textContent=t; msgEl.className="stg-msg"+(cls?" "+cls:""); };
@@ -786,6 +823,42 @@ function renderSettings(cfg){
   });
   document.getElementById("stgReset").addEventListener("click",()=>
     send(null,"Reset \u2014 Claude Code's default now applies."));
+
+  const seg=document.getElementById("pollSeg");
+  if(seg) seg.addEventListener("click",e=>{
+    const b=e.target.closest("button[data-ms]"); if(!b) return;
+    setPollMs(+b.dataset.ms);
+    [...seg.children].forEach(x=>x.classList.toggle("on",x===b));
+  });
+
+  const cacheMsg=()=>document.getElementById("cacheMsg");
+  const cacheDo=async(action,confirmText)=>{
+    const btns=[document.getElementById("cacheRebuild"),document.getElementById("cacheDelete")];
+    if(!confirm(confirmText)) return;
+    btns.forEach(b=>b.disabled=true);
+    cacheMsg().className="stg-msg"; cacheMsg().textContent=
+      action==="rebuild"?"Re-reading every log\u2026 this can take a minute.":"Deleting\u2026";
+    try{
+      const r=await fetch("/api/cache",{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});
+      const out=await r.json();
+      if(!r.ok) throw new Error(out.error||"request failed");
+      await load(); await loadStorage();
+      const cfg2=await (await fetch("/api/settings")).json();
+      renderSettings(cfg2);
+      const m=document.getElementById("cacheMsg"); m.className="stg-msg ok";
+      m.textContent = out.action==="rebuild"
+        ? `Rebuilt ${fmtNum(out.files)} files in ${out.seconds}s.`
+        : `Deleted. ${fmtNum(out.dropped)} parsed files dropped from memory.`;
+    }catch(e){ btns.forEach(b=>b.disabled=false);
+      cacheMsg().className="stg-msg err"; cacheMsg().textContent=e.message; }
+  };
+  document.getElementById("cacheRebuild").addEventListener("click",()=>cacheDo("rebuild",
+    "Rebuild the analytics cache?\n\nEvery log is re-read from scratch. Sessions whose logs "
+    +"a tool has already deleted cannot be recovered and will disappear from your totals."));
+  document.getElementById("cacheDelete").addEventListener("click",()=>cacheDo("delete",
+    "Delete the analytics cache?\n\nThis removes the file containing your parsed prompts, "
+    +"projects and costs. Sessions whose logs are already gone from disk are lost permanently."));
 
   const pwaBtn=document.getElementById("pwaBtn");
   if(pwaBtn && pwaSupported()) pwaBtn.addEventListener("click",async()=>{
@@ -1085,5 +1158,14 @@ document.getElementById("liveBtn").classList.add("on");
 if(location.hash && document.getElementById("v-"+location.hash.slice(1))) S.view=location.hash.slice(1);
 load().then(()=>{ if(S.view==="storage") loadStorage(); });
 setTimeout(loadStorage, 1200);
-setInterval(()=>{ if(S.live) load(); }, 15000);
-setInterval(()=>{ if(S.live) loadStorage(); }, 120000);
+/* Poll interval is user-configurable (gear menu). The payload is ~1MB, so a
+   tighter loop is real CPU and disk churn; 0 means "only when I press ↻". */
+let pollTimers=[];
+function applyPollInterval(){
+  pollTimers.forEach(clearInterval); pollTimers=[];
+  const ms=pollMs();
+  if(!ms) return;
+  pollTimers.push(setInterval(()=>{ if(S.live) load(); }, ms));
+  pollTimers.push(setInterval(()=>{ if(S.live) loadStorage(); }, Math.max(ms*8,120000)));
+}
+applyPollInterval();
