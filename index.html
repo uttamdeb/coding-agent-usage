@@ -37,6 +37,7 @@
     <button data-v="tools">Tools &amp; Agents</button>
     <button data-v="projects">Projects</button>
     <button data-v="sessions">Sessions</button>
+    <button data-v="optimize">Optimize</button>
     <button data-v="storage">Storage</button>
   </nav>
 
@@ -258,6 +259,22 @@
         <div class="card col-12">
           <div class="head"><div><h3>Sessions</h3><div class="hint" id="sessHint">click a row for detail · click a header to sort</div></div></div>
           <div class="tbl-wrap" style="max-height:none"><table id="sessTable"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= OPTIMIZE ================= -->
+    <section class="view" id="v-optimize">
+      <div class="grid">
+        <div class="card col-12">
+          <div class="head"><div><h3>What this is costing you</h3>
+            <div class="hint" id="optHint">findings from your own usage in the selected range</div></div></div>
+          <div class="stat-row" id="optStats"></div>
+        </div>
+        <div class="card col-12">
+          <div class="head"><div><h3>Suggestions</h3>
+            <div class="hint">ranked by what they'd save · each one lists the evidence it came from</div></div></div>
+          <div id="optFindings"></div>
         </div>
       </div>
     </section>

@@ -1015,6 +1015,7 @@ function renderAll(){
     else if(S.view==="tools") viewTools(d);
     else if(S.view==="projects") viewProjects(d);
     else if(S.view==="sessions") viewSessions(d);
+    else if(S.view==="optimize") viewOptimize(d);
     else if(S.view==="storage") viewStorage();
   }catch(err){
     console.error("render failed", err);
@@ -1173,3 +1174,282 @@ function applyPollInterval(){
   pollTimers.push(setInterval(()=>{ if(S.live) loadStorage(); }, Math.max(ms*8,120000)));
 }
 applyPollInterval();
+
+/* ---------------- OPTIMIZE ----------------
+   Every finding below is derived from the user's own logs in the selected range
+   and must carry (a) a number it is based on and (b) something to actually do.
+   A finding that does not apply is not rendered — no filler, no scolding. */
+
+/* sessionRows() adds a display `name`; the finders run on the raw clipped
+   sessions, so derive it the same way rather than rendering a blank cell. */
+const sessName = s => s.title || s.project || s.id || "(unnamed)";
+
+/* Anthropic bills a cache WRITE at 1.25-2x input and a read at 0.1x. Writing a
+   cache you never read back is the one unambiguous waste in the data. */
+function findCacheWaste(d){
+  const bad = d.sessions.filter(s => s.cc > 20000 && s.cr < s.cc * 0.5);
+  if(!bad.length) return null;
+  const cc = bad.reduce((a,s)=>a+s.cc,0);
+  const est = bad.reduce((a,s)=>a + s.cc/1e6 * 5, 0);   // ~1.25x a $4-ish blended input
+  return {
+    id:"cache-waste", impact: est, sev: est>5?"high":"low",
+    title:"Cache written but never read back",
+    body:`${bad.length} session${bad.length>1?"s":""} wrote <b>${fmtNum(cc)}</b> cache tokens and `
+      +`read back less than half of it. A cache write costs 1.25–2× the input rate and only pays `
+      +`off when later turns read it — these paid the premium and ended first.`,
+    todo:"Usually a session opened, loaded a lot of context, then stopped. Batch related questions "
+      +"into one session instead of starting a fresh one per question.",
+    rows: bad.sort((a,b)=>b.cc-a.cc).slice(0,5).map(s=>
+      [sessName(s), `${fmtNum(s.cc)} written`, `${fmtNum(s.cr)} read`, fmtUSD(s.cost)])
+  };
+}
+
+/* An expensive model doing light work. Priced honestly: recompute the SAME tokens
+   at the cheapest same-family model actually present in the data. */
+function findModelFit(d){
+  const heavy = ["Claude Opus 5","Claude Opus 4.8","Claude Opus 4.7","Claude Opus 4.6","Claude Fable 5"];
+  const light = d.sessions.filter(s => heavy.includes(s.model) && s.out < 4000 && s.tools <= 3 && s.cost > 0.05);
+  if(light.length < 3) return null;
+  const spend = light.reduce((a,s)=>a+s.cost,0);
+  return {
+    id:"model-fit", impact: spend*0.6, sev: spend>20?"high":"low",
+    title:"A top-tier model doing very light work",
+    body:`${light.length} sessions ran on an Opus/Fable-class model but produced under 4k output `
+      +`tokens and 3 or fewer tool calls — costing <b>${fmtUSD(spend)}</b>. Sonnet is roughly 2.5× `
+      +`cheaper per output token and Haiku 5×; for short answers the quality gap rarely shows.`,
+    todo:"For quick lookups and one-shot questions, start the session on a smaller model — "
+      +"in Claude Code, /model sonnet.",
+    rows: light.sort((a,b)=>b.cost-a.cost).slice(0,5).map(s=>
+      [sessName(s), s.model, `${fmtNum(s.out)} out · ${s.tools} tools`, fmtUSD(s.cost)])
+  };
+}
+
+/* MCP tool definitions ride in the system prompt of EVERY request. A server you
+   never call is a standing cost on every turn. */
+function findIdleMCP(d){
+  if(!RAW.mcp_servers || !RAW.mcp_servers.length) return null;
+  const norm = x => String(x||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+  const used = {};
+  for(const t of RAW.tools){
+    if(!t.name.startsWith("mcp__")) continue;
+    const rest = t.name.slice(5), i = rest.indexOf("__");
+    const srv = norm(i>0 ? rest.slice(0,i) : rest);
+    used[srv] = (used[srv]||0) + t.count;
+  }
+  const idle = RAW.mcp_servers.filter(m => {
+    const n = norm(m.name);
+    // loose match: a server may appear in tool names under a shortened alias
+    return !Object.keys(used).some(u => u===n || u.includes(n) || n.includes(u));
+  });
+  if(!idle.length) return null;
+  return {
+    id:"idle-mcp", impact: 0, sev:"info",
+    title:`${idle.length} MCP server${idle.length>1?"s":""} configured but never called`,
+    body:`Every connected MCP server's tool definitions are injected into the system prompt of `
+      +`<b>every request</b>, whether you use them or not. These ${idle.length} were not called `
+      +`once in the selected range: <b>${idle.map(m=>esc(m.name)).join(", ")}</b>.`,
+    todo:"Disconnect the ones you don't reach for — in Claude Code, /mcp, or remove them from "
+      +"~/.claude.json. Re-add when you next need them.",
+    rows: idle.map(m => [m.name, m.scope==="global"?"global":"project-scoped",
+      m.projects && m.projects.length ? m.projects.slice(0,3).join(", ") : "—", "0 calls"])
+  };
+}
+
+/* Thinking tokens bill at the output rate. Worth surfacing only when the share is
+   high enough that dropping effort would actually move the bill. */
+function findThinking(d){
+  let reason=0, out=0, cost=0;
+  for(const r of d.recs){ reason += r.reason||0; out += r.out||0; cost += r.cost||0; }
+  if(!out || reason/out < 0.15) return null;
+  const share = reason/out;
+  return {
+    id:"thinking", impact: cost*share*0.3, sev: share>0.3?"high":"low",
+    title:"Extended thinking is a large share of your output",
+    body:`<b>${fmtNum(reason)}</b> of ${fmtNum(out)} output tokens (${fmtPct(share)}) were `
+      +`thinking tokens, billed at the full output rate.`,
+    todo:"Thinking earns its cost on genuinely hard problems and wastes it on routine edits. "
+      +"Lower the default effort and raise it per-task rather than leaving it at max.",
+    rows: []
+  };
+}
+
+/* Sessions where each prompt costs far more than your own norm — usually context
+   that grew huge and is now re-read on every single turn. */
+function findContextTax(d){
+  const withPrompts = d.sessions.filter(s => s.user >= 5 && s.cost > 0);
+  if(withPrompts.length < 5) return null;
+  const per = withPrompts.map(s => s.cost/s.user).sort((a,b)=>a-b);
+  const med = per[Math.floor(per.length/2)];
+  const bad = withPrompts.filter(s => s.cost/s.user > Math.max(med*8, 1)).sort((a,b)=>b.cost-a.cost);
+  if(!bad.length) return null;
+  const excess = bad.reduce((a,s)=>a + (s.cost - med*s.user), 0);
+  return {
+    id:"context-tax", impact: Math.max(excess,0), sev: excess>50?"high":"low",
+    title:"Long sessions re-reading a very large context",
+    body:`${bad.length} session${bad.length>1?"s":""} cost more than 8× your median of `
+      +`<b>${fmtUSD2(med)}</b> per prompt. Every turn re-reads the whole conversation, so a session `
+      +`that has grown large keeps paying for it on each new question.`,
+    todo:"When a session drifts to a new task, start a fresh one — or /compact to drop the "
+      +"history you no longer need.",
+    rows: bad.slice(0,5).map(s => [sessName(s), `${fmtNum(s.user)} prompts`,
+      `${fmtUSD2(s.cost/s.user)}/prompt`, fmtUSD(s.cost)])
+  };
+}
+
+/* Delegating exploration to a subagent keeps the parent's context small. */
+function findSubagents(d){
+  const parents = d.sessions.filter(s => !s.subagent);
+  const heavy = parents.filter(s => s.tools >= 150 && !s.side);
+  if(heavy.length < 2) return null;
+  const spend = heavy.reduce((a,s)=>a+s.cost,0);
+  const used = parents.filter(s => s.side > 0).length;
+  return {
+    id:"subagents", impact: spend*0.15, sev: spend>100?"high":"low",
+    title:"Tool-heavy sessions that never delegated to a subagent",
+    body:`${heavy.length} session${heavy.length>1?"s":""} made 150+ tool calls without spawning a `
+      +`subagent, costing <b>${fmtUSD(spend)}</b>. ${used ? `You do use them elsewhere (${used} `
+      +`session${used>1?"s":""} did).` : ""} Every file a search reads lands in the main context and `
+      +`is re-read on every later turn; a subagent reads it in its own context and returns only the answer.`,
+    todo:"For broad searching or codebase exploration, hand it to a subagent and keep the summary.",
+    rows: heavy.sort((a,b)=>b.cost-a.cost).slice(0,5).map(s =>
+      [sessName(s), `${fmtNum(s.tools)} tool calls`, `${fmtNum(s.user)} prompts`, fmtUSD(s.cost)])
+  };
+}
+
+/* Cache hit rate, but only when it is genuinely low — the Cost tab already shows
+   the healthy case. */
+function findLowCache(d){
+  let cr=0, ctx=0;
+  for(const r of d.recs){ cr += r.cr||0; ctx += ctxTokens(r); }
+  if(!ctx || cr/ctx >= 0.7) return null;
+  const rate = cr/ctx;
+  return {
+    id:"low-cache", impact: 0, sev: rate<0.4?"high":"low",
+    title:"Prompt cache is doing less work than it could",
+    body:`Only <b>${fmtPct(rate)}</b> of your context tokens came from cache. A cache read costs `
+      +`a tenth of a fresh input token, so the gap is close to pure overhead.`,
+    todo:"Caching rewards stable context. Editing files near the top of the conversation, or "
+      +"switching models mid-session, invalidates it and forces a re-read.",
+    rows: []
+  };
+}
+
+
+/* Claude Code stamps attributionSkill on the requests a Skill drove. A skill that
+   fires often and pulls a lot of context is worth tightening or scoping. */
+function findSkills(d){
+  if(!RAW.skills || !RAW.skills.length) return null;
+  const inRange = RAW.skills.filter(x => x.date>=d.r.from && x.date<=d.r.to);
+  if(!inRange.length) return null;
+  const by={};
+  for(const x of inRange){
+    const e=by[x.name]||(by[x.name]={tok:0,asst:0,cost:0});
+    e.tok+=x.tok; e.asst+=x.asst; e.cost+=x.cost;
+  }
+  const rows=Object.entries(by).sort((a,b)=>b[1].cost-a[1].cost);
+  const total=d.recs.reduce((a,r)=>a+(r.cost||0),0);
+  const spend=rows.reduce((a,[,v])=>a+v.cost,0);
+  if(!spend) return null;
+  return {
+    id:"skills", impact: 0, sev:"info",
+    title:"Where your Skills are spending",
+    body:`Skills drove <b>${fmtUSD(spend)}</b>${total?` of ${fmtUSD(total)} (${fmtPct(spend/total)})`:""} `
+      +`in this range. A skill that runs often carries its whole instruction file into context `
+      +`each time, so a frequently-fired one is worth scoping tightly.`,
+    todo:"For the expensive ones, narrow when they trigger, or point their subagents at a "
+      +"cheaper model.",
+    rows: rows.slice(0,6).map(([n,v]) =>
+      [`/${n}`, `${fmtNum(v.asst)} requests`, fmtNum(v.tok)+" tokens", fmtUSD(v.cost)])
+  };
+}
+
+/* Every request re-sends the whole conversation. Past ~150k that is expensive even
+   at cache-read rates, because the read itself scales with the context. */
+function findBigContext(d){
+  if(!RAW.ctx || !RAW.ctx.length) return null;
+  const inRange = RAW.ctx.filter(x => x.date>=d.r.from && x.date<=d.r.to);
+  if(!inRange.length) return null;
+  const by={}; let tot=0;
+  for(const x of inRange){ by[x.bucket]=(by[x.bucket]||{tok:0,n:0});
+    by[x.bucket].tok+=x.tok; by[x.bucket].n+=x.n; tot+=x.tok; }
+  if(!tot) return null;
+  const big=(by["150-400k"]?.tok||0)+(by["400k+"]?.tok||0);
+  const share=big/tot;
+  if(share < 0.4) return null;
+  const total=d.recs.reduce((a,r)=>a+(r.cost||0),0);
+  const order=["0-50k","50-150k","150-400k","400k+"];
+  return {
+    id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low",
+    title:`${fmtPct(share)} of your tokens were sent at over 150k context`,
+    body:`Every turn re-sends the whole conversation. Past roughly 150k the re-read dominates `
+      +`the bill even when it is cached, because a cache read is charged per token too.`,
+    todo:"/compact once a task is done to drop the history behind it, and /clear (or a fresh "
+      +"session) when you switch to something unrelated.",
+    rows: order.filter(b=>by[b]).map(b =>
+      [b+" context", `${fmtNum(by[b].n)} requests`, fmtNum(by[b].tok)+" tokens",
+       fmtPct(by[b].tok/tot)])
+  };
+}
+
+/* Subagents each run their own request loop, so a subagent-heavy day is a real cost
+   centre even though it is often the right call. */
+function findSubagentShare(d){
+  const subs=d.sessions.filter(s=>s.subagent);
+  if(!subs.length) return null;
+  const subCost=subs.reduce((a,s)=>a+s.cost,0);
+  const total=d.sessions.reduce((a,s)=>a+s.cost,0);
+  if(!total || subCost/total < 0.2) return null;
+  return {
+    id:"subagent-share", impact: 0, sev:"info",
+    title:`${fmtPct(subCost/total)} of your spend ran inside subagents`,
+    body:`${fmtNum(subs.length)} subagent transcript${subs.length>1?"s":""} cost <b>${fmtUSD(subCost)}</b>. `
+      +`Each subagent runs its own request loop with its own context, which is exactly why they keep `
+      +`the parent small — but it does mean spawning one is never free.`,
+    todo:"Worth it for broad exploration; wasteful for a task you could answer inline. For simple "
+      +"delegated work, point the subagent at a cheaper model.",
+    rows: subs.sort((a,b)=>b.cost-a.cost).slice(0,5).map(s =>
+      [sessName(s), `${fmtNum(s.tools)} tools`, fmtNum(s.tok)+" tokens", fmtUSD(s.cost)])
+  };
+}
+
+const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
+                     findSubagents, findSubagentShare, findSkills, findIdleMCP,
+                     findThinking, findLowCache];
+
+function viewOptimize(d){
+  const found = OPT_FINDERS.map(f => { try{ return f(d); }catch(e){ return null; } })
+                           .filter(Boolean)
+                           .sort((a,b) => b.impact - a.impact);
+  const totalSpend = d.recs.reduce((a,r)=>a+(r.cost||0),0);
+  const addressable = found.reduce((a,f)=>a+f.impact, 0);
+  document.getElementById("optStats").innerHTML = [
+    {l:"Spend in range", v:fmtUSD(totalSpend), s:`${fmtNum(d.sessions.length)} sessions`},
+    {l:"Potentially addressable", v:addressable>0?fmtUSD(addressable):"—",
+     s:totalSpend?`about ${fmtPct(addressable/totalSpend)} of spend`:"—"},
+    {l:"Findings", v:String(found.length), s:found.length?"ranked by est. saving":"nothing to flag"},
+  ].map(x=>`<div class="stat" style="flex:1 1 150px"><div class="l">${x.l}</div>
+      <div class="v num">${x.v}</div><div class="s">${esc(x.s)}</div></div>`).join("");
+
+  document.getElementById("optHint").textContent =
+    `derived from your own logs · ${fmtNum(d.sessions.length)} sessions in the selected range`;
+
+  const host = document.getElementById("optFindings");
+  if(!found.length){
+    host.innerHTML = `<div class="empty">Nothing worth flagging in this range — your cache hit
+      rate, model mix and session lengths all look reasonable.</div>`;
+    return;
+  }
+  host.innerHTML = found.map(f => `
+    <div class="finding sev-${f.sev}">
+      <div class="finding-head">
+        <div class="finding-title">${f.title}</div>
+        ${f.impact > 0.5 ? `<div class="finding-impact num">${fmtUSD(f.impact)}<span>est. saving</span></div>` : ""}
+      </div>
+      <div class="finding-body">${f.body}</div>
+      <div class="finding-todo"><b>What to do</b> ${f.todo}</div>
+      ${f.rows && f.rows.length ? `<table class="finding-tbl"><tbody>${
+        f.rows.map(r=>`<tr>${r.map((c,i)=>
+          `<td${i===0?' class="name"':(i===r.length-1?' class="num r"':' class="dim"')}>${esc(c)}</td>`
+        ).join("")}</tr>`).join("")}</tbody></table>` : ""}
+    </div>`).join("");
+}

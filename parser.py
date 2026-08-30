@@ -341,7 +341,11 @@ def _blank_agg(source, path):
         "mtime": 0.0,
         "offset": 0,           # bytes parsed (jsonl only)
         "records": {},          # "date\tmodel" -> token/count dict
-        "tools": {},            # "date\ttool name" -> count
+        "tools": {},
+        # date\tskill -> tokens attributed to a Skill (Claude Code's attributionSkill)
+        "skills": {},
+        # date\tbucket -> tokens sent at that per-request context size
+        "ctx": {},            # "date\ttool name" -> count
         "hourly": {},           # "date\thour" -> {tokens, msgs}  (day-of-week is
                                 #   derived from the date, so it needs no bucket)
         "project": "(unknown)",
@@ -512,6 +516,25 @@ def parse_claude(agg, lines):
                             tools += 1
                 r["tools"] += tools
                 _bump_time(agg, dt, inp + out + cr + cc, 1)
+                date0 = _buckets(dt)[0]
+                tok = inp + out + cr + cc
+                # Which Skill was driving this request, if any. Claude Code stamps
+                # attributionSkill on the records a skill produced.
+                sk = o.get("attributionSkill")
+                if sk:
+                    k = f"{date0}\t{sk}"
+                    e = agg["skills"].setdefault(k, {"tok": 0, "asst": 0,
+                                                     "in": 0, "out": 0, "cr": 0, "cc": 0})
+                    e["tok"] += tok; e["asst"] += 1
+                    e["in"] += inp; e["out"] += out; e["cr"] += cr; e["cc"] += cc
+                # How big the context was for THIS request: everything that had to be
+                # sent, cached or not. Long conversations cost more even when cached.
+                ctx = inp + cr + cc
+                b = ("0-50k" if ctx < 50_000 else "50-150k" if ctx < 150_000
+                     else "150-400k" if ctx < 400_000 else "400k+")
+                ck = f"{date0}\t{b}"
+                ce = agg["ctx"].setdefault(ck, {"tok": 0, "n": 0})
+                ce["tok"] += tok; ce["n"] += 1
                 T = agg["totals"]
                 T["in"] += inp; T["out"] += out; T["cr"] += cr; T["cc"] += cc
                 T["cc5"] += cc5; T["cc1"] += cc1

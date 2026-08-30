@@ -23,8 +23,8 @@ first — it may already be up.
 | `static/views.js` | The seven views, controls, events, boot. |
 | `index.html` | Shell only: header, tabs, filter bar, card markup. |
 
-Seven tabs: Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions ·
-Storage. Tab lives in `location.hash`; `?theme=` and `?range=` preset the UI (handy for
+Eight tabs: Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions ·
+**Optimize** · Storage. Tab lives in `location.hash`; `?theme=` and `?range=` preset the UI (handy for
 headless screenshots).
 
 Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
@@ -104,6 +104,21 @@ errors land on `document.documentElement.dataset.jsError`:
 Sweep every tab at `?range=today` too: a line chart needs **two** points to draw a segment,
 so single-day ranges render as empty axes unless the dataset uses `pointRadius: soloPoint(data)`.
 Add `--screenshot=out.png --window-size=1560,2000` to eyeball it.
+
+## The Optimize tab
+
+Findings are computed client-side in `static/views.js` by the functions in
+`OPT_FINDERS`, ranked by estimated saving. A finder returns `null` when it does not
+apply — **never render a finding that isn't backed by the user's own numbers**, and
+every one must carry the figure it came from plus something concrete to do.
+
+It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
+drove a request — this is how "/dataviz cost you $20" is possible), a per-request
+context-size histogram (`agg["ctx"]`, bucketed 0-50k / 50-150k / 150-400k / 400k+),
+and the MCP servers configured in `~/.claude.json` (`_mcp_servers()`) compared against
+`mcp__<server>__*` tool calls. Server names are matched loosely — the same server
+appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
+`google-workspace` shows up in tool names as `workspace`.
 
 ## Gotchas
 

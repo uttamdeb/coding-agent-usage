@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 27
+CACHE_VERSION = 28
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -132,6 +132,8 @@ def build_payload():
     projects = {}     # (project, source) -> {tokens, msgs, sessions, cost}
     hourly = {}       # (date, hour, source) -> {tokens, msgs}
     sessions = []
+    skills = {}       # (date, skill) -> tokens/cost
+    ctxb = {}         # (date, bucket) -> tokens/requests
     model_meta = {}   # model -> vendor
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
 
@@ -170,6 +172,24 @@ def build_payload():
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
             file_msgs += r.get("asst", 0)
             file_cost += c
+        for sk, v in agg.get("skills", {}).items():
+            date, _, name = sk.partition("\t")
+            if not name:
+                continue
+            e = skills.setdefault((date, name), {"tok": 0, "asst": 0, "cost": 0.0})
+            e["tok"] += v.get("tok", 0)
+            e["asst"] += v.get("asst", 0)
+            # price the skill's own tokens at this file's dominant model
+            e["cost"] += _cost(source, agg.get("state", {}).get("dom_model") or "Unknown",
+                               v.get("in", 0), v.get("out", 0), v.get("cr", 0),
+                               v.get("cc", 0), 0, 0, date)
+        for ck, v in agg.get("ctx", {}).items():
+            date, _, b = ck.partition("\t")
+            if not b:
+                continue
+            e = ctxb.setdefault((date, b), {"tok": 0, "n": 0})
+            e["tok"] += v.get("tok", 0)
+            e["n"] += v.get("n", 0)
         for tk, c in agg.get("tools", {}).items():
             date, _, name = tk.partition("\t")
             if not name:                      # pre-v16 cache shape — skip
@@ -267,6 +287,9 @@ def build_payload():
     return {
         "generated_at": time.time(),
         "meta": dict(_meta),
+        "mcp_servers": _mcp_servers(),
+        "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
+        "ctx": [{"date": d, "bucket": b, **v} for (d, b), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,
         "projects": proj_list,
@@ -401,6 +424,36 @@ def _write_claude_settings(data):
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, CLAUDE_SETTINGS_PATH)
+
+
+_mcp_cache = {"at": 0.0, "data": None}
+
+
+def _mcp_servers():
+    """Which MCP servers the user has CONFIGURED for Claude Code.
+
+    Every connected server's tool definitions are injected into the system prompt
+    of every request, so one that is never called is a standing tax on each turn.
+    Read from ~/.claude.json: `mcpServers` globally plus per-project overrides.
+    """
+    if time.time() - _mcp_cache["at"] < 60 and _mcp_cache["data"] is not None:
+        return _mcp_cache["data"]
+    out = {}
+    path = os.path.join(P.HOME, ".claude.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    for name in (cfg.get("mcpServers") or {}):
+        out.setdefault(name, {"name": name, "scope": "global", "projects": []})
+    for proj, v in (cfg.get("projects") or {}).items():
+        for name in ((v or {}).get("mcpServers") or {}):
+            e = out.setdefault(name, {"name": name, "scope": "project", "projects": []})
+            e["projects"].append(P._leaf(proj) or proj)
+    data = sorted(out.values(), key=lambda x: x["name"].lower())
+    _mcp_cache.update(at=time.time(), data=data)
+    return data
 
 
 def build_settings():

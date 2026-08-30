@@ -100,6 +100,12 @@ row filters everything to that project.
 messages, tool calls, cache % — click any row for a detail panel with git branch, entrypoint,
 tool version, token breakdown and log size.
 
+**Optimize** — suggestions derived from your own logs, ranked by what they'd save:
+MCP servers you've connected but never call (their tool definitions ride in every
+request), sessions running at huge context, cache you paid to write and never read,
+a top-tier model doing trivial work, what each **Skill** costs you, and how much
+spend runs inside subagents. Nothing is shown unless your data supports it.
+
 **Storage** — see below.
 
 **Filters** — flexible date range (14 presets incl. this week / month / quarter / year, plus a

@@ -303,3 +303,23 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .sub-badge{display:inline-block;font-size:9.5px;font-weight:650;letter-spacing:.3px;
   text-transform:uppercase;color:var(--text-3);border:1px solid var(--border-2);
   border-radius:4px;padding:1px 4px;margin-right:6px;vertical-align:1px}
+
+/* ---------- optimize: finding cards ---------- */
+.finding{border:1px solid var(--border);border-left:3px solid var(--border-2);
+  border-radius:var(--radius-xs);padding:14px 16px;margin-bottom:11px;background:var(--surface-2)}
+.finding.sev-high{border-left-color:var(--warn)}
+.finding.sev-info{border-left-color:var(--accent)}
+.finding-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.finding-title{font-size:14px;font-weight:640;color:var(--text);line-height:1.35}
+.finding-impact{text-align:right;font-size:16px;font-weight:650;color:var(--text);white-space:nowrap}
+.finding-impact span{display:block;font-size:10px;font-weight:550;color:var(--text-3);
+  text-transform:uppercase;letter-spacing:.4px;margin-top:1px}
+.finding-body{font-size:12.5px;line-height:1.65;color:var(--text-2);margin-top:7px}
+.finding-body b{color:var(--text);font-weight:640}
+.finding-todo{font-size:12.5px;line-height:1.6;color:var(--text-2);margin-top:9px;
+  padding-top:9px;border-top:1px solid var(--border)}
+.finding-todo b{color:var(--text);font-weight:640;margin-right:5px}
+.finding-tbl{width:100%;margin-top:11px;border-collapse:collapse;font-size:11.5px}
+.finding-tbl td{padding:4px 8px 4px 0;border-top:1px solid var(--border);color:var(--text-2)}
+.finding-tbl td.name{color:var(--text);max-width:290px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
