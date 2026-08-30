@@ -32,6 +32,12 @@ If the user just says "run/launch the dashboard": check if it's already up
   `cleanupPeriodDays` in the user's `~/.claude/settings.json`. That file belongs to Claude
   Code, so the write reads-modifies-writes (never clobbers other keys), is atomic via
   `os.replace`, and leaves a `.bak`. Validate the value server-side before writing.
+  **Any write endpoint you add must go through `Handler._csrf_ok()`.** There is no auth,
+  so a browser will let ANY page the user is visiting POST here — with `Content-Type:
+  text/plain` it is a CORS "simple request" and is sent with no preflight. The attacker
+  can't read the reply, but the write lands, which was enough to set `cleanupPeriodDays=1`
+  and make Claude Code delete the user's transcripts. The guard requires a JSON content
+  type (forcing a preflight we never answer) and a same-origin `Origin`/`Sec-Fetch-Site`.
 - `parser.py` — discovers each tool's log files and parses them into per-file aggregates.
   `discover()` lists sources; `update_file()` routes each to a `parse_*` function;
   incremental (append-only `.jsonl` read by byte offset; rewritten stores re-read on change).
@@ -99,6 +105,10 @@ or `~/.opencode`). Missing tools simply contribute nothing. Paths are derived fr
   range) and `pointRadius:0`; a line needs two points to draw a segment. Build line/area
   datasets with `pointRadius: soloPoint(data)` (`static/charts.js`) so a lone reading is
   still drawn as a dot. Sweep every tab at `?range=today` after touching chart code.
+- **Adding a parser that can throw** → never `except Exception: pass` around it. A
+  swallowed error is indistinguishable from "the user doesn't have this tool", which is
+  exactly how a `TypeError` once made the whole opencode DB parser silently yield nothing.
+  Write to stderr.
 - **Testing a UI change**: headless Chrome catches render failures — uncaught errors and
   caught render errors both land on `document.documentElement.dataset.jsError`:
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
