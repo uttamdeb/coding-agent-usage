@@ -2,7 +2,7 @@
 parser.py — Incremental usage-log parser for local AI coding tools.
 
 Sources: Claude Code, Claude Desktop (agent mode), Codex CLI, GitHub Copilot
-(VS Code / Insiders / Cursor), Cursor native AI, and opencode. Each tool stores
+(VS Code / Insiders / Cursor), Cursor native AI, opencode, and Hermes Agent. Each tool stores
 interaction logs locally; this module discovers those files, parses them
 incrementally (append-only .jsonl read from a byte offset; rewritten stores
 and SQLite databases re-read on change), and produces per-file aggregates the
@@ -102,6 +102,22 @@ def _opencode_roots():
 OPENCODE_ROOTS = _opencode_roots()
 # Current opencode stores interaction history in a single SQLite database.
 OPENCODE_DBS = [os.path.join(r, "opencode.db") for r in OPENCODE_ROOTS]
+
+# Hermes Agent (NousResearch) — one SQLite state.db under $HERMES_HOME (default
+# ~/.hermes, or %LOCALAPPDATA%\hermes on native Windows) holding every session,
+# same "one store, many sessions" shape as Cursor's state.vscdb.
+def _hermes_home():
+    override = os.environ.get("HERMES_HOME", "").strip()
+    if override:
+        return override
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return os.path.join(base, "hermes")
+    return os.path.join(HOME, ".hermes")
+
+
+HERMES_DB = os.path.join(_hermes_home(), "state.db")
 
 EDITOR_LABEL = {
     "Code": "VS Code",
@@ -1030,7 +1046,7 @@ def parse_cursor(agg, db_path):
 # OPENCODE  (SST) — per-message JSON files; real token counts + model + provider
 # ===========================================================================
 def _from_ms_or_s(v):
-    """opencode time.created is epoch ms; tolerate seconds just in case."""
+    """Epoch ms (opencode's time.created) or seconds (Hermes' REAL timestamps) — accept both."""
     try:
         v = float(v)
     except (TypeError, ValueError):
@@ -1360,6 +1376,157 @@ def _blank_opencode_session():
 
 
 # ===========================================================================
+# HERMES AGENT (NousResearch) — one SQLite state.db, many sessions.
+# `sessions` carries per-session metadata, `session_model_usage` carries a real
+# input/output/cache/reasoning token breakdown per (session, model) pair (a
+# session can switch models mid-way, same as Codex), and `messages` carries a
+# per-turn timestamp/role/tool_calls used only for day-bucketed counts.
+# ===========================================================================
+def _normalize_hermes(model_id):
+    """Hermes routes through many providers verbatim (Anthropic/OpenAI/OpenRouter/
+    Nous's own Hermes models); _canonicalize already maps the Claude/GPT/o-series
+    spellings, same as opencode's normalizer."""
+    if not model_id:
+        return "Unknown"
+    name = _canonicalize(model_id)
+    if name and name != model_id:
+        return name
+    return model_id.split("/")[-1]
+
+
+def parse_hermes(agg, db_path):
+    import sqlite3
+    agg["source"] = "hermes"
+    agg["editor"] = "Hermes Agent"
+    try:
+        con = _open_ro_sqlite(db_path)
+    except Exception:
+        return
+    cur = con.cursor()
+
+    sess = {}
+    try:
+        rows = cur.execute(
+            "SELECT id, cwd, git_branch, title, model, started_at, ended_at, "
+            "archived, source FROM sessions").fetchall()
+    except Exception:
+        con.close()
+        return
+    for sid, cwd, branch, title, model, started, ended, archived, chan in rows:
+        sess[sid] = {
+            "cwd": cwd, "branch": branch, "title": title, "model": model,
+            "started": started, "ended": ended or started,
+            "archived": bool(archived), "channel": chan,
+            "days": {}, "asst": 0, "user": 0, "tools": 0, "req": 0,
+            "in": 0, "out": 0, "cr": 0, "cc": 0, "reason": 0,
+        }
+
+    try:
+        urows = cur.execute(
+            "SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+            "cache_write_tokens, reasoning_tokens, api_call_count, first_seen, last_seen "
+            "FROM session_model_usage").fetchall()
+    except Exception:
+        urows = []
+    model_tokens = {}   # session_id -> {display_model: tokens}
+    for sid, model, it, ot, cr, cw, reason, calls, first, last in urows:
+        s = sess.get(sid)
+        if s is None:
+            continue
+        dt = _from_ms_or_s(first or last or s["started"])
+        if not dt:
+            continue
+        date = _buckets(dt)[0]
+        disp = _normalize_hermes(model)
+        it, ot, cr, cw = int(it or 0), int(ot or 0), int(cr or 0), int(cw or 0)
+        reason, calls = int(reason or 0), int(calls or 0)
+        r = _rec(agg, date, disp)
+        r["in"] += it; r["out"] += ot; r["cr"] += cr; r["cc"] += cw
+        r["cc5"] += cw          # untiered cache write -> 5m rate, like opencode
+        r["reason"] += reason; r["req"] += calls
+        T = agg["totals"]
+        T["in"] += it; T["out"] += ot; T["cr"] += cr; T["cc"] += cw
+        T["cc5"] += cw; T["reason"] += reason; T["req"] += calls
+        _bump_time(agg, dt, it + ot + cr + cw, 0)
+        s["in"] += it; s["out"] += ot; s["cr"] += cr; s["cc"] += cw
+        s["reason"] += reason; s["req"] += calls
+        dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                          "asst": 0, "user": 0, "tools": 0})
+        dd["in"] += it; dd["out"] += ot; dd["cr"] += cr; dd["cc"] += cw
+        model_tokens.setdefault(sid, {})
+        model_tokens[sid][disp] = model_tokens[sid].get(disp, 0) + it + ot
+
+    dom_model = {sid: max(mt, key=mt.get) for sid, mt in model_tokens.items() if mt}
+
+    try:
+        mrows = cur.execute(
+            "SELECT session_id, role, timestamp, tool_calls FROM messages").fetchall()
+    except Exception:
+        mrows = []
+    for sid, role, ts, tool_calls_json in mrows:
+        s = sess.get(sid)
+        if s is None or not ts:
+            continue
+        dt = _from_ms_or_s(ts)
+        if not dt:
+            continue
+        date = _buckets(dt)[0]
+        model = dom_model.get(sid) or _normalize_hermes(s.get("model")) or "Unknown"
+        r = _rec(agg, date, model)
+        dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                          "asst": 0, "user": 0, "tools": 0})
+        if role == "user":
+            r["user"] += 1; agg["totals"]["user"] += 1; s["user"] += 1; dd["user"] += 1
+        elif role == "assistant":
+            r["asst"] += 1; agg["totals"]["asst"] += 1; s["asst"] += 1; dd["asst"] += 1
+            _bump_time(agg, dt, 0, 1)
+            if tool_calls_json:
+                try:
+                    calls = json.loads(tool_calls_json) or []
+                except Exception:
+                    calls = []
+                for tc in calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    name = fn.get("name") or tc.get("name") or "tool"
+                    _tool(agg, date, name)
+                    r["tools"] += 1; s["tools"] += 1; dd["tools"] += 1
+    con.close()
+
+    tally = {}
+    for s in sess.values():
+        p = _leaf(s["cwd"]) or s["cwd"] or "(unknown)"
+        w = s["in"] + s["out"] + s["asst"] + s["user"]
+        if w:
+            tally[p] = tally.get(p, 0) + w
+    agg["project"] = (max(tally, key=tally.get) if tally else "Hermes Agent")
+
+    out = []
+    for sid, s in sess.items():
+        mt = model_tokens.get(sid, {})
+        ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])]
+        dom = dom_model.get(sid) or _normalize_hermes(s["model"])
+        models = [dom] + [m for m in ranked if m != dom]
+        start = _from_ms_or_s(s["started"])
+        end = _from_ms_or_s(s["ended"]) or start
+        out.append({
+            "id": (sid or "")[:8], "source": "hermes", "editor": "Hermes Agent",
+            "title": s.get("title"), "project": _leaf(s["cwd"]) or s["cwd"] or "(unknown)",
+            "model": dom, "models": models[:6], "nmodels": len(mt),
+            "branch": s.get("branch"), "entry": s.get("channel"),
+            "start": start.isoformat() if start else None,
+            "end": end.isoformat() if end else None,
+            "in": s["in"], "out": s["out"], "cr": s["cr"], "cc": s["cc"],
+            "cc5": s["cc"], "cc1": 0,
+            "asst": s["asst"], "user": s["user"], "req": s["req"], "prem": 0.0,
+            "tools": s["tools"], "side": 0, "days": s["days"],
+            "archived_session": bool(s.get("archived")),
+        })
+    agg["sessions"] = out
+
+
+# ===========================================================================
 # Incremental file scanning
 # ===========================================================================
 def _read_new_bytes(path, offset):
@@ -1439,6 +1606,8 @@ def discover():
     for db in CURSOR_DBS:
         if os.path.exists(db):
             out.append(("cursor", db, "Cursor"))
+    if os.path.exists(HERMES_DB):
+        out.append(("hermes", HERMES_DB, "Hermes Agent"))
     # opencode: current versions keep everything in opencode.db; older versions
     # used storage/message/<session>/msg_*.json. Discover both so upgrades and
     # legacy installs are both covered.
@@ -1501,7 +1670,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
         _finalize_session(fresh, source, path)
         return fresh
 
-    if source in ("gemini", "cursor"):
+    if source in ("gemini", "cursor", "hermes"):
         # rewritten stores → full reparse when the file/DB changes
         if agg and agg.get("size") == size and agg.get("mtime") == mtime:
             return agg
@@ -1511,10 +1680,12 @@ def update_file(agg, source, path, editor_hint, proj_map):
             if source == "gemini":
                 parse_gemini(fresh, path)
                 _finalize_session(fresh, source, path)
-            else:
+            elif source == "cursor":
                 parse_cursor(fresh, path)   # sets its own per-composer sessions
-        except Exception:
-            pass
+            else:
+                parse_hermes(fresh, path)   # sets its own per-session sessions
+        except Exception as e:
+            sys.stderr.write(f"[{source}] {path}: {type(e).__name__}: {e}\n")
         fresh["size"], fresh["mtime"] = size, mtime
         return fresh
 

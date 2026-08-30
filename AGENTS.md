@@ -16,7 +16,7 @@ first — it may already be up.
 
 | File | Role |
 |---|---|
-| `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings}`. Owns the cache, the aggregate merge and `_cost()`. |
+| `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings,cache}`. Owns the cache, the aggregate merge and `_cost()`. |
 | `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
@@ -69,9 +69,17 @@ Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
-- **SQLite stores**: open `mode=ro&busy_timeout=5000`. Never `immutable=1` — it ignores
-  the `-wal`, so while the tool is running its recent activity is invisible or the open
-  fails outright.
+- **Hermes Agent** (`~/.hermes/state.db`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes`): one
+  SQLite store for all sessions. Unlike Cursor it logs a real per-model in/out/cache/
+  reasoning breakdown in `session_model_usage` (hence `exact:true`), one row per model a
+  session actually used — sessions can switch model mid-way, like Codex. `messages.tool_calls`
+  is an OpenAI-shaped JSON array, read only for per-day tool and turn counts; message
+  `content` is never read.
+- **SQLite stores**: always open via `_open_ro_sqlite()`. Neither flag is safe alone —
+  `mode=ro` reads the `-wal` (so a *running* tool's newest sessions are visible) but must
+  create a `-shm`, which fails on read-only media; `immutable=1` needs no `-shm` but ignores
+  the `-wal` entirely. The helper tries the first, probes it with a query (connect is lazy),
+  and falls back to the second.
 
 ## Common tasks
 

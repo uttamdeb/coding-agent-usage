@@ -9,7 +9,7 @@ day, hour, weekday, tool, project and session** — plus how much **disk** all t
 **Your data never leaves your machine.** No account, no API key, no telemetry, no
 dependencies — just Python's standard library and a vendored copy of Chart.js.
 
-Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode**.
+Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent**.
 
 ---
 
@@ -44,7 +44,7 @@ Two people running this see two completely different dashboards.
 
 This is the important part if you're sharing it: the dashboard has **no bundled data**.
 On each machine it scans that user's own logs (`~/.claude`, `~/.codex`,
-`~/Library/Application Support/…`, `~/.local/share/opencode`, …) and builds a **fresh**
+`~/Library/Application Support/…`, `~/.local/share/opencode`, `~/.hermes`, …) and builds a **fresh**
 `.usage_cache.json` locally. That cache is **gitignored and never committed**, so a clone
 starts empty and shows only the cloning user's numbers. (If you ever *copy the folder*
 instead of cloning, delete `.usage_cache.json` first — that file is your personal data.)
@@ -61,9 +61,10 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
+| **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
-a Claude or GPT model used *inside* Copilot/Cursor/opencode counts under that tool, and the
+a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes counts under that tool, and the
 Models table lists each `model × tool` row separately.
 
 ---
