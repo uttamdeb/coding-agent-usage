@@ -20,6 +20,7 @@
       <button class="btn icon" id="themeBtn" title="Theme (t)">◐</button>
       <button class="btn" id="liveBtn" title="Auto-refresh">live</button>
       <button class="btn icon" id="refreshBtn" title="Refresh now (r)">↻</button>
+      <button class="btn icon" id="settingsBtn" title="Settings">⚙</button>
     </div>
   </header>
 
@@ -137,7 +138,13 @@
           <div class="chartbox" style="height:250px"><canvas id="cacheChart"></canvas></div>
         </div>
         <div class="card col-5">
-          <div class="head"><div><h3>Blended rate</h3><div class="hint">effective $ per 1M tokens, by model</div></div></div>
+          <div class="head">
+            <div><h3>Blended rate</h3><div class="hint" id="rateHint">a <em>rate</em>, not a total &mdash; multiply by a model's tokens to get its cost</div></div>
+            <div class="seg" id="rateSeg" title="Which token count to divide the cost by">
+              <button data-m="all" class="on">All tokens</button>
+              <button data-m="out">Per output</button>
+            </div>
+          </div>
           <div class="chartbox" style="height:250px"><canvas id="rateChart"></canvas></div>
         </div>
         <div class="card col-12">

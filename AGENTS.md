@@ -26,8 +26,12 @@ If the user just says "run/launch the dashboard": check if it's already up
 ## How it works (architecture)
 - `dashboard.py` — stdlib `http.server`. Serves `/` (the shell), `/static/*` (css + js),
   `/chart.js` (vendored Chart.js), `/api/data` (aggregated JSON), `/api/storage`
-  (on-disk footprint), `/api/refresh`. Owns the cache, the per-file aggregate merge, and
-  cost computation (`_cost`).
+  (on-disk footprint), `/api/refresh`, and `/api/settings` (GET + POST). Owns the cache,
+  the per-file aggregate merge, and cost computation (`_cost`).
+  `/api/settings` is the ONE place this app writes outside its own cache: it edits
+  `cleanupPeriodDays` in the user's `~/.claude/settings.json`. That file belongs to Claude
+  Code, so the write reads-modifies-writes (never clobbers other keys), is atomic via
+  `os.replace`, and leaves a `.bak`. Validate the value server-side before writing.
 - `parser.py` — discovers each tool's log files and parses them into per-file aggregates.
   `discover()` lists sources; `update_file()` routes each to a `parse_*` function;
   incremental (append-only `.jsonl` read by byte offset; rewritten stores re-read on change).
@@ -90,6 +94,10 @@ nothing. Paths are derived from `$HOME` / XDG, so it works on any user's machine
   record came from*, never by model name.
 - **Anything that changes an aggregate's shape** (new field, new key format) needs a
   `CACHE_VERSION` bump in `dashboard.py` + a `--rebuild` (~45s here).
+- **A line chart renders as empty axes** → it has one data point (e.g. a single-day
+  range) and `pointRadius:0`; a line needs two points to draw a segment. Build line/area
+  datasets with `pointRadius: soloPoint(data)` (`static/charts.js`) so a lone reading is
+  still drawn as a dot. Sweep every tab at `?range=today` after touching chart code.
 - **Testing a UI change**: headless Chrome catches render failures — uncaught errors and
   caught render errors both land on `document.documentElement.dataset.jsError`:
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \

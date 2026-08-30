@@ -66,9 +66,14 @@ function stackDS(label, data, color){
     borderColor:cssv("--surface"), borderWidth:{top:2,left:0,right:0,bottom:0},
     borderRadius:3, borderSkipped:false, maxBarThickness:34};
 }
+/* A line needs TWO points to draw a segment, so a single-day range (or a series
+   with one lone reading) renders as empty axes. Show the point itself instead. */
+function soloPoint(data){
+  return (data||[]).filter(v=>v!=null && v!==undefined).length < 2 ? 4 : 0;
+}
 function areaDS(label, data, color, fill){
   return {label, data, borderColor:color, backgroundColor:color+"59",
-    borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.25,
+    borderWidth:2, pointRadius:soloPoint(data), pointHoverRadius:4, tension:.25,
     fill:fill===undefined?true:fill, stack:"a"};
 }
 /* value labels at the bar ends — small horizontal bar lists are unreadable

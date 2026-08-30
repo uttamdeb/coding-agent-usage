@@ -78,7 +78,9 @@ day to zoom to it) · daily activity stacked by tool · share by tool · **hour 
 heatmap** · token composition.
 
 **Cost** — total / per active day / 30-day run rate / per session / per prompt ·
-**cache hit rate and what caching saved you** · blended $ per 1M tokens by model ·
+**cache hit rate and what caching saved you** · blended rate by model, toggleable between
+*all tokens* (cost ÷ every token, cache reads included — a low bar means heavily cached)
+and *per output* (cost ÷ generated tokens, the one that's comparable across providers) ·
 cumulative and daily cost by tool.
 
 **Models & Providers** — **Anthropic vs OpenAI vs Google head-to-head** (independent of which
@@ -144,9 +146,14 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
 ## Note on log retention
 
 Some tools delete old logs. **Claude Code** prunes transcripts after `cleanupPeriodDays`
-(default **30**); raise it in `~/.claude/settings.json` to keep more history. **Codex**
-keeps everything. The dashboard also keeps parsed sessions in its cache even after a tool
-deletes the on-disk log, so totals don't silently shrink once seen.
+(default **30**); **Codex** keeps everything. The dashboard also keeps parsed sessions in
+its cache even after a tool deletes the on-disk log, so totals don't silently shrink once seen.
+
+You can change Claude Code's retention window from the dashboard itself — the **⚙** button
+in the header edits `cleanupPeriodDays` in your own `~/.claude/settings.json` (leave it blank
+to fall back to the tool's default). The write is atomic and keeps a `.bak`; every other
+setting in the file is preserved untouched. It's the only file outside its own cache that the
+dashboard ever writes.
 
 ---
 

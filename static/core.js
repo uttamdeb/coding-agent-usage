@@ -83,7 +83,7 @@ const S = {
   models:new Set(),
   search:"",
   exactOnly:false,
-  metric:"tokens", projMetric:"tokens", provMetric:"cost",
+  metric:"tokens", projMetric:"tokens", provMetric:"cost", rateMetric:"all",
   live:true,
   muted:{},             // chartId -> Set of muted series labels
   sessSort:{key:"end",dir:-1}, modelSort:{key:"cost",dir:-1},

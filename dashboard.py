@@ -343,6 +343,64 @@ def _extras():
 
 IS_WINDOWS = os.name == "nt"
 
+# ---------------------------------------------------------------------------
+# Settings — lets the dashboard edit the *tool's own* config, not its own.
+# Currently just Claude Code's log-retention window (settings.json → cleanupPeriodDays).
+# ---------------------------------------------------------------------------
+CLAUDE_SETTINGS_PATH = os.path.join(P.HOME, ".claude", "settings.json")
+CLAUDE_CLEANUP_DEFAULT = 30
+
+
+def _read_claude_settings():
+    if not os.path.exists(CLAUDE_SETTINGS_PATH):
+        return {}
+    try:
+        with open(CLAUDE_SETTINGS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_claude_settings(data):
+    """Atomic write with a .bak of whatever was there — this file belongs to Claude
+    Code, not to us, so a failed or unwanted edit must be trivially recoverable."""
+    d = os.path.dirname(CLAUDE_SETTINGS_PATH)
+    os.makedirs(d, exist_ok=True)
+    if os.path.exists(CLAUDE_SETTINGS_PATH):
+        shutil.copy2(CLAUDE_SETTINGS_PATH, CLAUDE_SETTINGS_PATH + ".bak")
+    tmp = CLAUDE_SETTINGS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, CLAUDE_SETTINGS_PATH)
+
+
+def build_settings():
+    cur = _read_claude_settings()
+    return {
+        "claude_settings_path": CLAUDE_SETTINGS_PATH,
+        "claude_settings_exists": os.path.exists(CLAUDE_SETTINGS_PATH),
+        "claude_cleanup_days": cur.get("cleanupPeriodDays"),
+        "claude_cleanup_default": CLAUDE_CLEANUP_DEFAULT,
+    }
+
+
+def save_claude_cleanup_days(value):
+    """value: an int (new retention window), or None to remove the override and
+    fall back to Claude Code's own default."""
+    if value is not None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("cleanupPeriodDays must be a whole number of days")
+        if value < 1 or value > 36500:
+            raise ValueError("cleanupPeriodDays must be between 1 and 36500")
+    data = _read_claude_settings()
+    if value is None:
+        data.pop("cleanupPeriodDays", None)
+    else:
+        data["cleanupPeriodDays"] = value
+    _write_claude_settings(data)
+    return build_settings()
+
 
 def _cleanup_targets():
     """Directories the cleanup commands sweep, as (dir, path-glob, name-glob).
@@ -553,6 +611,33 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = build_payload()
                 self._send(200, json.dumps(payload))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({"error": str(e)}))
+        elif route == "/api/settings":
+            try:
+                self._send(200, json.dumps(build_settings()))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({"error": str(e)}))
+        else:
+            self._send(404, "not found", "text/plain")
+
+    def do_POST(self):
+        route = self.path.split("?")[0]
+        if route == "/api/settings":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                self._send(400, json.dumps({"error": "invalid JSON body"}))
+                return
+            try:
+                result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
+                self._send(200, json.dumps(result))
+            except ValueError as e:
+                self._send(400, json.dumps({"error": str(e)}))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({"error": str(e)}))

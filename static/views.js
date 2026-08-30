@@ -295,11 +295,11 @@ function viewCost(d){
   if(S.compare){
     const pd = slice(prevRange());
     const m={}; for(const r of pd.recs) m[r.date]=(m[r.date]||0)+(r.cost||0);
-    const pdays = dateList(prevRange()); let run=0;
+    const pdays = dateList(prevRange()); let run=0, prevData;
     ds.push({label:"Previous period (all tools)",
-      data:pdays.map(x=>+(run+=(m[x]||0)).toFixed(2)).slice(0,days2.length),
+      data:(prevData=pdays.map(x=>+(run+=(m[x]||0)).toFixed(2)).slice(0,days2.length)),
       borderColor:cssv("--text-3"), borderDash:[5,4], borderWidth:1.5,
-      pointRadius:0, fill:false, tension:.25, stack:"b"});
+      pointRadius:soloPoint(prevData), fill:false, tension:.25, stack:"b"});
   }
   document.getElementById("cumLegend").innerHTML =
     legendHTML("cumChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
@@ -322,23 +322,36 @@ function viewCost(d){
   // cache hit rate over time (one series, one axis)
   const cd={}; for(const r of d.recs){ const c=cd[r.date]||(cd[r.date]={cr:0,ctx:0});
     c.cr+=r.cr||0; c.ctx+=ctxTokens(r); }
+  let cacheData;
   mk("cacheChart",{type:"line",
     data:{labels:days2.map(shortDay),datasets:[{
       label:"Cache hit rate",
-      data:days2.map(x=>cd[x]&&cd[x].ctx?+(cd[x].cr/cd[x].ctx*100).toFixed(1):null),
+      data:(cacheData=days2.map(x=>cd[x]&&cd[x].ctx?+(cd[x].cr/cd[x].ctx*100).toFixed(1):null)),
       borderColor:cssv("--accent"), backgroundColor:cssv("--accent")+"22",
-      borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.3, fill:true, spanGaps:true}]},
+      borderWidth:2, pointRadius:soloPoint(cacheData), pointHoverRadius:4,
+      tension:.3, fill:true, spanGaps:true}]},
     options:{scales:axes({y:{min:0,max:100,ticks:{callback:v=>v+"%"}}}),
       plugins:{tooltip:{callbacks:{label:c=>" cache hit "+c.parsed.y+"%"}}}}});
 
-  // blended $ per 1M tokens by model
+  // blended rate by model.
+  //   "all" = cost / every token, cache reads included. Correct, but the divisor is
+  //     ~95% cache reads, so the bar mostly tracks how well-cached a model was and is
+  //     NOT comparable across providers (OpenAI bills no cache writes at all).
+  //   "out" = cost / output tokens — the whole cost over the work actually generated,
+  //     which is comparable across models and providers.
+  const perOut = S.rateMetric==="out";
   const bm={};
   for(const r of d.recs){ if(r.model==="(user)") continue;
-    const b=bm[r.model]||(bm[r.model]={tok:0,cost:0}); b.tok+=recTokens(r); b.cost+=r.cost||0; }
-  const rows=Object.entries(bm).filter(([,v])=>v.tok>10000)
-    .map(([m,v])=>({label:m,value:v.cost/v.tok*1e6,color:modelColor(m)}))
+    const b=bm[r.model]||(bm[r.model]={tok:0,out:0,cost:0});
+    b.tok+=recTokens(r); b.out+=r.out||0; b.cost+=r.cost||0; }
+  const rows=Object.entries(bm)
+    .filter(([,v])=>perOut ? v.out>1000 : v.tok>10000)
+    .map(([m,v])=>({label:m,value:v.cost/(perOut?v.out:v.tok)*1e6,color:modelColor(m)}))
     .sort((a,b)=>b.value-a.value).slice(0,12);
-  hbar("rateChart", rows, {fmt:v=>"$"+v.toFixed(2)});
+  hbar("rateChart", rows, {fmt:v=>"$"+(v>=100?Math.round(v):v.toFixed(2))});
+  document.getElementById("rateHint").innerHTML = perOut
+    ? "total cost &divide; output tokens &mdash; comparable across models and providers"
+    : "a <em>rate</em>, not a total &mdash; multiply by a model's tokens to get its cost";
 
   // daily cost stacked
   const dsc = srcs.map(s=>{
@@ -420,7 +433,8 @@ function viewModels(d){
     const data=days.map(x=>{ const row=per[x]; if(!row) return null;
       const tot=Object.values(row).reduce((a,b)=>a+b,0); return tot?+(100*(row[p]||0)/tot).toFixed(1):null; });
     return {label:p,data,borderColor:provColor(p),backgroundColor:provColor(p)+"44",
-      borderWidth:1.5,pointRadius:0,pointHoverRadius:4,tension:.25,fill:true,stack:"a",spanGaps:false};
+      borderWidth:1.5,pointRadius:soloPoint(data),pointHoverRadius:4,tension:.25,
+      fill:true,stack:"a",spanGaps:false};
   });
   // normalised to 100% — muting a provider would make the rest not add up
   document.getElementById("provShareLegend").innerHTML =
@@ -680,6 +694,62 @@ function openSession(i){
   `);
 }
 
+/* ---------------- SETTINGS ---------------- */
+async function openSettings(){
+  openDrawer('<div class="empty">Loading…</div>');
+  let cfg; try{ cfg=await (await fetch("/api/settings")).json(); }
+  catch(e){ openDrawer('<div class="empty">Could not read settings.</div>'); return; }
+  renderSettings(cfg);
+}
+function renderSettings(cfg){
+  const days=cfg.claude_cleanup_days;
+  openDrawer(`
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);font-weight:640">Settings</div>
+    <h2 style="margin:4px 0 12px;font-size:17px;font-weight:650">Claude Code log retention</h2>
+    <div class="warnbar">Claude Code deletes its own session transcripts after this many days
+      (the <b>cleanupPeriodDays</b> setting) — Codex, by contrast, keeps everything forever.
+      Raising it keeps more history on disk. Either way, this dashboard already keeps every
+      session it has parsed, so a shorter window never shrinks its own numbers.</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:16px 0 4px">
+      <input class="field" type="number" id="stgDays" min="1" max="36500" step="1"
+        style="width:90px" placeholder="${cfg.claude_cleanup_default}"
+        value="${days==null?"":days}">
+      <span class="dim" style="font-size:12px">days &nbsp;·&nbsp; blank = tool default (${cfg.claude_cleanup_default})</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" id="stgSave">Save</button>
+      <button class="btn" id="stgReset">Reset to default</button>
+    </div>
+    <div id="stgMsg" style="margin-top:12px;font-size:12px;min-height:16px"></div>
+    <div class="dim" style="margin-top:18px;font-size:11px;word-break:break-all">
+      ${esc(cfg.claude_settings_path)}${cfg.claude_settings_exists?"":" (not created yet — will be on first save)"}</div>
+  `);
+  const msg=t=>{ document.getElementById("stgMsg").textContent=t; };
+  document.getElementById("stgSave").addEventListener("click",async()=>{
+    const raw=document.getElementById("stgDays").value.trim();
+    const value = raw===""?null:Number(raw);
+    if(value!==null && (!Number.isInteger(value) || value<1)){ msg("Enter a whole number of days, or leave it blank."); return; }
+    msg("Saving…");
+    try{
+      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({cleanupPeriodDays:value})});
+      const out=await r.json();
+      if(!r.ok) throw new Error(out.error||"save failed");
+      renderSettings(out); document.getElementById("stgMsg").textContent="Saved.";
+    }catch(e){ msg("Could not save: "+e.message); }
+  });
+  document.getElementById("stgReset").addEventListener("click",async()=>{
+    msg("Resetting…");
+    try{
+      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({cleanupPeriodDays:null})});
+      const out=await r.json();
+      if(!r.ok) throw new Error(out.error||"reset failed");
+      renderSettings(out); document.getElementById("stgMsg").textContent="Reset to tool default.";
+    }catch(e){ msg("Could not reset: "+e.message); }
+  });
+}
+
 /* ---------------- STORAGE ---------------- */
 function viewStorage(){
   if(!STORAGE){ document.getElementById("stStats").innerHTML='<div class="empty">Measuring…</div>'; return; }
@@ -911,6 +981,7 @@ document.getElementById("reliableBtn").addEventListener("click",e=>{
   S.exactOnly=!S.exactOnly; e.currentTarget.classList.toggle("on",S.exactOnly); renderAll();
 });
 document.getElementById("themeBtn").addEventListener("click",cycleTheme);
+document.getElementById("settingsBtn").addEventListener("click",openSettings);
 document.getElementById("refreshBtn").addEventListener("click",async e=>{
   e.currentTarget.style.opacity=".4";
   await fetch("/api/refresh"); await load(); await loadStorage();
@@ -921,11 +992,12 @@ document.getElementById("liveBtn").addEventListener("click",e=>{
   document.getElementById("livedot").classList.toggle("off",!S.live);
 });
 document.addEventListener("click",e=>{
-  const seg=e.target.closest("#metricSeg button,#projMetricSeg button,#provMetricSeg button");
+  const seg=e.target.closest("#metricSeg button,#projMetricSeg button,#provMetricSeg button,#rateSeg button");
   if(seg){ const p=seg.parentElement;
     if(p.id==="metricSeg") S.metric=seg.dataset.m;
     if(p.id==="projMetricSeg") S.projMetric=seg.dataset.m;
     if(p.id==="provMetricSeg") S.provMetric=seg.dataset.m;
+    if(p.id==="rateSeg") S.rateMetric=seg.dataset.m;
     [...p.children].forEach(x=>x.classList.toggle("on",x===seg)); renderAll(); return; }
   const lg=e.target.closest(".li[data-lg]");
   if(lg){ const id=lg.dataset.lg, k=lg.dataset.k;
