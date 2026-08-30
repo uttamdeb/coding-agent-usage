@@ -314,10 +314,14 @@ addEventListener("error",e=>{document.documentElement.dataset.jsError=
   (e.message||"error")+" @ "+(e.filename||"").split("/").pop()+":"+(e.lineno||0);});
 addEventListener("unhandledrejection",e=>{document.documentElement.dataset.jsError=
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason);});
-/* register PWA service worker */
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(()=>{});
-}
+/* Offline app (service worker) is OPT-IN — see the gear menu. A service worker
+   claims this origin until it is explicitly unregistered, and localhost ports get
+   reused by other tools, so it is never registered without the user asking. */
+try {
+  if ('serviceWorker' in navigator && localStorage.getItem('aiu.pwa') === '1') {
+    navigator.serviceWorker.register('/sw.js').catch(function(){});
+  }
+} catch (e) {}
 </script>
 <script src="/static/core.js"></script>
 <script src="/static/charts.js"></script>

@@ -701,6 +701,26 @@ async function openSettings(){
   catch(e){ openDrawer('<div class="empty">Could not read settings.</div>'); return; }
   renderSettings(cfg);
 }
+/* Offline app (PWA) — strictly opt-in. A service worker keeps controlling this
+   origin until it is unregistered, and localhost ports get reused by other tools,
+   so nothing is registered unless the user turns it on here. */
+const PWA_KEY = "aiu.pwa";
+function pwaWanted(){ try{ return localStorage.getItem(PWA_KEY)==="1"; }catch(e){ return false; } }
+function pwaSupported(){ return "serviceWorker" in navigator; }
+async function pwaEnable(){
+  try{ localStorage.setItem(PWA_KEY,"1"); }catch(e){}
+  await navigator.serviceWorker.register("/sw.js");
+}
+async function pwaDisable(){
+  try{ localStorage.removeItem(PWA_KEY); }catch(e){}
+  const regs = await navigator.serviceWorker.getRegistrations();
+  await Promise.all(regs.map(r=>r.unregister()));
+  if(window.caches){
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(k=>k.startsWith("ai-usage-")).map(k=>caches.delete(k)));
+  }
+}
+
 function renderSettings(cfg){
   const days=cfg.claude_cleanup_days, def=cfg.claude_cleanup_default;
   openDrawer(`
@@ -724,6 +744,23 @@ function renderSettings(cfg){
     <div class="stg-path"><b>Writes to</b><span>${esc(cfg.claude_settings_path)}</span>${
       cfg.claude_settings_exists?"":"<br>Not created yet &mdash; it will be on first save."}
       <br>Other settings in the file are preserved, and a <span>.bak</span> is kept.</div>
+
+    <h2 class="stg-h" style="margin-top:26px">Install as an app</h2>
+    <div class="stg-note">Off by default. Turning this on registers a service worker so
+      the dashboard can be installed to your Dock or taskbar and still open its shell when
+      <code>dashboard.py</code> isn't running. Your usage data is never cached &mdash;
+      <code>/api/</code> always goes to the live server.</div>
+    <div class="stg-note">A service worker keeps controlling <code>${esc(location.host)}</code>
+      until you turn it off here, including for any <em>other</em> tool you later run on this
+      port. Turning it off unregisters it and clears its cache.</div>
+    <div class="stg-actions">
+      <button class="btn${pwaWanted()?"":" primary"}" id="pwaBtn"${pwaSupported()?"":" disabled"}>${
+        pwaWanted()?"Turn off":"Turn on"}</button>
+      <span class="stg-hint" id="pwaState" style="align-self:center">${
+        !pwaSupported() ? "Not available in this browser"
+        : pwaWanted() ? "On \u2014 installable, shell cached" : "Off"}</span>
+    </div>
+    <div class="stg-msg" id="pwaMsg"></div>
   `);
   const msgEl=document.getElementById("stgMsg");
   const msg=(t,cls)=>{ msgEl.textContent=t; msgEl.className="stg-msg"+(cls?" "+cls:""); };
@@ -749,6 +786,23 @@ function renderSettings(cfg){
   });
   document.getElementById("stgReset").addEventListener("click",()=>
     send(null,"Reset \u2014 Claude Code's default now applies."));
+
+  const pwaBtn=document.getElementById("pwaBtn");
+  if(pwaBtn && pwaSupported()) pwaBtn.addEventListener("click",async()=>{
+    const turningOn=!pwaWanted(); const m=document.getElementById("pwaMsg");
+    pwaBtn.disabled=true; m.className="stg-msg"; m.textContent=turningOn?"Registering\u2026":"Removing\u2026";
+    try{
+      if(turningOn){ await pwaEnable(); renderSettings(cfg);
+        document.getElementById("pwaMsg").className="stg-msg ok";
+        document.getElementById("pwaMsg").textContent=
+          "On. Use your browser's Install / Add to Dock to place it alongside your apps.";
+      }else{ await pwaDisable(); renderSettings(cfg);
+        document.getElementById("pwaMsg").className="stg-msg ok";
+        document.getElementById("pwaMsg").textContent=
+          "Off. Service worker unregistered and its cache cleared.";
+      }
+    }catch(e){ pwaBtn.disabled=false; m.className="stg-msg err"; m.textContent=e.message; }
+  });
 }
 
 /* ---------------- STORAGE ---------------- */

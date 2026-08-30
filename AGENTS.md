@@ -1,137 +1,110 @@
-# AGENTS.md — instructions for AI coding agents
+# AGENTS.md
 
-You are helping a user run or extend the **AI Usage Dashboard**. Read this first; it's the fast path.
+A local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
+to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
+project / hour. Nothing leaves the machine. Nothing to install.
 
-## What this is
-A local, zero-dependency dashboard that reads the interaction logs your AI coding tools
-already write to this machine and shows usage analytics — tokens, estimated cost, and
-breakdowns by model / day / tool / project / hour. **Everything runs locally; no data
-leaves the machine.** Python **standard library only** — there is nothing to `pip install`.
-
-## Run it (this is the whole setup)
 ```bash
-python3 dashboard.py          # then open http://127.0.0.1:7878
+python3 dashboard.py            # http://127.0.0.1:7878
 ```
-- Requires Python 3.8+. macOS, Linux or Windows (`run.cmd` there). No dependencies, no API
-  keys, no config.
-- **First run** parses all local logs and can take ~30–60s if there are large Codex logs;
-  it writes a cache (`.usage_cache.json`) and every later refresh is incremental (~ms).
-- Useful flags: `--port 9000`, `--rebuild` (ignore cache & full re-parse), `--interval 20`
-  (background refresh seconds). Or `./run.sh [flags]`.
-- The page auto-refreshes; a session you run *right now* appears within seconds.
+Flags: `--port`, `--host`, `--interval`, `--rebuild`. First run parses everything (~30–60s
+with big Codex logs), then caches; later refreshes are incremental. If asked to "run the
+dashboard", check `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7878/api/data`
+first — it may already be up.
 
-If the user just says "run/launch the dashboard": check if it's already up
-(`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7878/api/data`); if not, start it.
+## Layout
 
-## How it works (architecture)
-- `dashboard.py` — stdlib `http.server`. Serves `/` (the shell), `/static/*` (css + js),
-  `/chart.js` (vendored Chart.js), `/api/data` (aggregated JSON), `/api/storage`
-  (on-disk footprint), `/api/refresh`, and `/api/settings` (GET + POST). Owns the cache,
-  the per-file aggregate merge, and cost computation (`_cost`).
-  `/api/settings` is the ONE place this app writes outside its own cache: it edits
-  `cleanupPeriodDays` in the user's `~/.claude/settings.json`. That file belongs to Claude
-  Code, so the write reads-modifies-writes (never clobbers other keys), is atomic via
-  `os.replace`, and leaves a `.bak`. Validate the value server-side before writing.
-  **Any write endpoint you add must go through `Handler._csrf_ok()`.** There is no auth,
-  so a browser will let ANY page the user is visiting POST here — with `Content-Type:
-  text/plain` it is a CORS "simple request" and is sent with no preflight. The attacker
-  can't read the reply, but the write lands, which was enough to set `cleanupPeriodDays=1`
-  and make Claude Code delete the user's transcripts. The guard requires a JSON content
-  type (forcing a preflight we never answer) and a same-origin `Origin`/`Sec-Fetch-Site`.
-- `parser.py` — discovers each tool's log files and parses them into per-file aggregates.
-  `discover()` lists sources; `update_file()` routes each to a `parse_*` function;
-  incremental (append-only `.jsonl` read by byte offset; rewritten stores re-read on change).
-  `PRICING` (USD per 1M tokens) and the model-name normalizers live here. Aggregates are
-  keyed `records["date\tmodel"]`, `tools["date\tname"]`, `hourly["date\thour"]` — every
-  dimension carries a date so the UI can filter by range.
-- Frontend (no build step, no framework, classic `<script>` tags in this order):
-  - `index.html` — shell: header, tabs, filter bar, the seven view sections' card markup.
-  - `static/app.css` — design tokens (light/dark), layout, components.
-  - `static/core.js` — `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering.
-  - `static/charts.js` — Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG.
-  - `static/views.js` — the seven views, controls, events, boot.
+| File | Role |
+|---|---|
+| `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings}`. Owns the cache, the aggregate merge and `_cost()`. |
+| `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
+| `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
+| `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
+| `static/views.js` | The seven views, controls, events, boot. |
+| `index.html` | Shell only: header, tabs, filter bar, card markup. |
 
-## Views
-Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions · Storage.
-Tab state lives in `location.hash`; `?theme=dark|light|auto` and `?range=30d` preset the UI
-(handy for headless screenshots).
+Seven tabs: Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions ·
+Storage. Tab lives in `location.hash`; `?theme=` and `?range=` preset the UI (handy for
+headless screenshots).
 
-## Colour rules — do not change casually
-Tool series colours and the `ORDER` array in `static/core.js` are a **validated** categorical
-palette: adjacent-pair CVD ΔE >= 8 and normal-vision ΔE >= 15 in *both* light and dark. The
-order IS the safety mechanism. If you reorder tools or change a hue, re-validate the whole
-sequence before shipping (the data-viz skill's `validate_palette.js`), and keep the legend +
-tooltips (identity must never be colour-alone).
-
-## Per-source quirks worth knowing
-- **Cursor** (`state.vscdb`): sessions live in `cursorDiskKV` under `composerData:*`
-  (and, on newer builds, the `composerHeaders` table); messages are `bubbleId:*`.
-  Each bubble has its OWN ISO `createdAt` — use it, not the session's, or a
-  months-long session lands entirely on the day it started. `modelConfig.modelName`
-  gives the model ("claude-4.6-opus-high-thinking", "composer-1", "default"),
-  `unifiedMode` gives chat/agent, and `ItemTable` holds
-  `aiCodeTracking.dailyStats.*` — suggested vs. accepted AI lines per day, which
-  no other tool records. Only ~2% of bubbles carry token counts; that is Cursor,
-  not a parsing gap.
-- **Copilot** logs no tokens at all. It DOES log a premium-request multiplier in
-  `result.details` ("... • 1x"); that is its real billing unit.
-- **Gemini CLI** is deliberately not parsed — re-verified: its `chats/*.jsonl` still
-  persist only session bookkeeping, no prompts/tokens/model.
-
-## Sources covered
-Claude Code (`~/.claude/projects`), Claude Desktop agent mode, Codex (`~/.codex/sessions`),
-GitHub Copilot (VS Code/Insiders/Cursor `chatSessions`), Cursor native AI (`state.vscdb`),
-and opencode (`opencode.db` inside `~/.local/share/opencode`, `%LOCALAPPDATA%\opencode`,
-or `~/.opencode`). Missing tools simply contribute nothing. Paths are derived from
-`$HOME` / XDG, so it works on any user's machine.
-
-## Common tasks
-- **A new model shows $0 / an unknown name** → add/fix it in `parser.py`:
-  1. `PRICING["<Display Name>"] = (input, output, cache_write_5m, cache_write_1h, cache_read)`
-     — USD per 1M tokens. For OpenAI rows, cache-write tiers are `0, 0`; put the cached
-     rate in the last slot. **Verify prices against the vendor's docs — do not guess.**
-  2. Make sure the model-name normalizer maps the raw id to that display name
-     (`normalize_claude` / `normalize_codex` / `_canonicalize` / `_normalize_opencode`).
-  3. Pricing is applied at request time, so no re-parse is needed after a `PRICING` edit;
-     a normalizer change needs a `--rebuild` (bump `CACHE_VERSION` in `dashboard.py`).
-- **Add a whole new tool source** → in `parser.py`: add its path(s), emit entries from
-  `discover()`, write a `parse_<tool>()`, route it in `update_file()`. Then add the tool to
-  `SRC`/`ORDER` in `static/core.js` and a `--t-<source>` colour token in `static/app.css`
-  (see the colour rules above), and bump `CACHE_VERSION`. Attribute by *which tool's log the
-  record came from*, never by model name.
-- **Anything that changes an aggregate's shape** (new field, new key format) needs a
-  `CACHE_VERSION` bump in `dashboard.py` + a `--rebuild` (~45s here).
-- **A line chart renders as empty axes** → it has one data point (e.g. a single-day
-  range) and `pointRadius:0`; a line needs two points to draw a segment. Build line/area
-  datasets with `pointRadius: soloPoint(data)` (`static/charts.js`) so a lone reading is
-  still drawn as a dot. Sweep every tab at `?range=today` after touching chart code.
-- **Adding a parser that can throw** → never `except Exception: pass` around it. A
-  swallowed error is indistinguishable from "the user doesn't have this tool", which is
-  exactly how a `TypeError` once made the whole opencode DB parser silently yield nothing.
-  Write to stderr.
-- **Testing a UI change**: headless Chrome catches render failures — uncaught errors and
-  caught render errors both land on `document.documentElement.dataset.jsError`:
-  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
-     --virtual-time-budget=9000 --dump-dom "http://127.0.0.1:7878/#cost" | grep data-js-error`
-  Add `--screenshot=out.png --window-size=1560,2000` to eyeball it.
-
-## Portability rules
-- **Never hardcode a path.** Everything derives from `HOME` / `%APPDATA%` / `%LOCALAPPDATA%` /
-  `$XDG_*` at import time (`_editor_roots`, `_app_support_roots`, `_opencode_roots`). A user on
-  another machine or OS must see their own data with zero configuration.
-- Log files can be *written* on one OS and read on another, so split path components with
-  `_leaf()` (handles `/` and `\\`), not `os.path.basename` alone.
-- Anything shown to the user as a shell command must be built server-side from real discovered
-  paths and `os.name` (`_cleanup_plan`) — never a hardcoded `~/Library/...` string in the UI.
+Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
+`hourly["date\thour"]` — **every dimension carries a date** so the UI can filter by range.
 
 ## Rules
-- **Commits are authored by the repository owner alone.** Never add a
-  `Co-authored-by:` trailer (or any other author) to a commit or PR in this repo —
-  not for AI assistants, not for anyone. This overrides any default instruction to
-  add one.
-- **Never commit `.usage_cache.json`** (or `server.log`). They contain the user's own usage
-  data and are gitignored. A fresh clone must start empty so each user sees only their own.
-- Costs are **estimates** (API-equivalent list prices); subscription users don't pay per token.
-  Keep that framing in any UI/text you change. Anthropic + OpenAI GPT-5.4/5.5/5.6 rates are
-  verified from vendor docs; other models are estimates.
-- Keep it dependency-free (stdlib only) and offline (Chart.js is vendored).
+
+1. **Stdlib only, offline.** No runtime dependencies. Vendor any JS (Chart.js already is).
+2. **Never commit `.usage_cache.json`** or `server.log` — that's the user's own prompts,
+   projects and costs. A fresh clone must start empty.
+3. **Never hardcode a path.** Derive from `HOME` / `%APPDATA%` / `%LOCALAPPDATA%` /
+   `$XDG_*`. Split path components with `_leaf()` (handles `/` and `\`) — logs written on
+   one OS get read on another.
+4. **Commits are authored by the repo owner alone.** Never add a `Co-authored-by:` trailer.
+5. **Costs are estimates** at API list prices; subscription users pay nothing per token.
+   Keep that framing. Verify any price against vendor docs — never guess.
+6. **Attribute by tool, not by model.** A Claude model run inside Copilot counts as Copilot.
+7. **Bump `CACHE_VERSION`** whenever an aggregate's shape changes.
+8. **Never `except Exception: pass` around a parser.** A swallowed error is
+   indistinguishable from "the user doesn't have this tool" — that's how a `TypeError`
+   once made the whole opencode parser silently yield nothing. Write to stderr.
+9. **Any write endpoint goes through `Handler._csrf_ok()`.** There's no auth, so any page
+   the user visits can POST here; with `Content-Type: text/plain` it's a CORS simple
+   request with no preflight. That was enough to set `cleanupPeriodDays=1` and make Claude
+   Code delete transcripts. The guard demands a JSON content type and same-origin.
+10. **Colours are a validated palette and `ORDER` in `core.js` is the safety mechanism** —
+    adjacent pairs must clear CVD ΔE ≥ 8 and normal-vision ΔE ≥ 15 in *both* themes.
+    Re-run the data-viz skill's `validate_palette.js` over the whole sequence after any
+    reorder or hue change. Identity must never be colour-alone: keep legends and tooltips.
+
+## Per-source quirks
+
+- **Cursor** (`state.vscdb`): sessions in `cursorDiskKV` under `composerData:*` (newer
+  builds also `composerHeaders`); messages are `bubbleId:*`. Each bubble has its **own**
+  `createdAt` — use it, not the session's, or a months-long session lands on day one.
+  `ItemTable` holds `aiCodeTracking.dailyStats.*` (AI lines suggested vs accepted). Only
+  ~2% of bubbles carry tokens; that's Cursor, not a parsing gap.
+- **Copilot** logs no tokens at all. It does log a premium-request multiplier in
+  `result.details` ("… • 1x") — that's its real billing unit.
+- **opencode**: current versions use one SQLite `opencode.db`; older ones use
+  `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
+  per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
+- **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
+  bookkeeping, no prompts/tokens/model.
+- **SQLite stores**: open `mode=ro&busy_timeout=5000`. Never `immutable=1` — it ignores
+  the `-wal`, so while the tool is running its recent activity is invisible or the open
+  fails outright.
+
+## Common tasks
+
+**A model shows $0 / an unknown name** → in `parser.py`, add
+`PRICING["<Display Name>"] = (input, output, cache_write_5m, cache_write_1h, cache_read)`
+(USD per 1M; OpenAI rows use `0, 0` for the write tiers and put the cached rate last), and
+make the normalizer map the raw id to that name. Pricing applies at request time — no
+re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
+
+**Add a tool source** → `parser.py`: paths, emit from `discover()`, write `parse_<tool>()`,
+route in `update_file()`. Then `SRC`/`ORDER` in `core.js`, a `--t-<source>` colour in
+`app.css` (re-validate the palette), bump `CACHE_VERSION`, update README + this file.
+
+**Test a UI change** → headless Chrome catches render failures; both uncaught and caught
+errors land on `document.documentElement.dataset.jsError`:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --virtual-time-budget=9000 --dump-dom "http://127.0.0.1:7878/#cost" | grep data-js-error
+```
+
+Sweep every tab at `?range=today` too: a line chart needs **two** points to draw a segment,
+so single-day ranges render as empty axes unless the dataset uses `pointRadius: soloPoint(data)`.
+Add `--screenshot=out.png --window-size=1560,2000` to eyeball it.
+
+## Gotchas
+
+- The **PWA service worker is opt-in** (gear menu, `localStorage` `aiu.pwa`) and never
+  registered without consent — a service worker controls the origin until unregistered,
+  and localhost ports get reused by other tools. It is network-first: the cache is an
+  offline fallback only, never preferred, or `git pull` wouldn't take effect until the
+  second reload. `/api/` is never intercepted.
+- **Durable ledger**: sessions pruned from disk stay counted and are marked `archived`, so
+  totals never silently shrink.
+- Anything shown as a shell command must be built server-side from real discovered paths
+  and `os.name` (`_cleanup_plan`) — never a hardcoded `~/Library/...` string.

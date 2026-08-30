@@ -834,7 +834,11 @@ def parse_cursor(agg, db_path):
     agg["editor"] = "Cursor"
     agg["project"] = "Cursor"
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+        # NOT immutable=1: that flag tells SQLite the file can never change, so it
+        # skips locking AND ignores the -wal. While Cursor is running, recent
+        # activity still sits in state.vscdb-wal and would be invisible — or the
+        # open would fail outright and be swallowed, reading as "no Cursor usage".
+        con = sqlite3.connect(f"file:{db_path}?mode=ro&busy_timeout=5000", uri=True)
     except Exception:
         return
     cur = con.cursor()

@@ -175,6 +175,14 @@ and extend this from that file).
 `index.html` (shell) · `static/app.css` · `static/core.js` · `static/charts.js` ·
 `static/views.js` · `chart.umd.min.js` (vendored Chart.js) · `AGENTS.md` · `run.sh`.
 
+## Install it as an app (optional)
+
+The dashboard can run as a standalone window in your Dock or taskbar. It's **off by
+default** — open the **⚙** menu and turn on *Install as an app*, then use your browser's
+Install / Add to Dock. That registers a service worker so the shell still opens when
+`dashboard.py` isn't running; your usage data is never cached, `/api/` always hits the live
+server. Turning it off again unregisters the worker and clears its cache.
+
 ## Contributing
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the setup, the hard rules
