@@ -645,6 +645,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
 
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # A browser tab closed/refreshed mid-response is normal traffic, not a
+        # server fault — don't spam stderr with a traceback for it.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def background_refresher(interval):
     while True:
         time.sleep(interval)
@@ -673,7 +682,7 @@ def main():
 
     threading.Thread(target=background_refresher, args=(args.interval,), daemon=True).start()
 
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv = Server((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     sys.stderr.write(f"\n  ✦ AI Usage Dashboard live at  {url}\n")
     sys.stderr.write(f"    refreshing every {args.interval}s · Ctrl-C to stop\n\n")
