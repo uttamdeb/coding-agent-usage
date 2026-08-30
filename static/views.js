@@ -702,52 +702,53 @@ async function openSettings(){
   renderSettings(cfg);
 }
 function renderSettings(cfg){
-  const days=cfg.claude_cleanup_days;
+  const days=cfg.claude_cleanup_days, def=cfg.claude_cleanup_default;
   openDrawer(`
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);font-weight:640">Settings</div>
-    <h2 style="margin:4px 0 12px;font-size:17px;font-weight:650">Claude Code log retention</h2>
-    <div class="warnbar">Claude Code deletes its own session transcripts after this many days
-      (the <b>cleanupPeriodDays</b> setting) — Codex, by contrast, keeps everything forever.
-      Raising it keeps more history on disk. Either way, this dashboard already keeps every
-      session it has parsed, so a shorter window never shrinks its own numbers.</div>
-    <div style="display:flex;align-items:center;gap:10px;margin:16px 0 4px">
+    <div class="stg-eyebrow">Settings</div>
+    <h2 class="stg-h">Claude Code log retention</h2>
+    <div class="stg-note">Claude Code deletes its own session transcripts after this
+      many days &mdash; the <code>cleanupPeriodDays</code> setting. Codex, by contrast,
+      keeps everything forever. Raise it to keep more history on disk.</div>
+    <div class="stg-note">Shortening it never shrinks your analytics: this dashboard
+      keeps every session it has already parsed, even after the tool deletes the log.</div>
+    <div class="stg-field">
       <input class="field" type="number" id="stgDays" min="1" max="36500" step="1"
-        style="width:90px" placeholder="${cfg.claude_cleanup_default}"
-        value="${days==null?"":days}">
-      <span class="dim" style="font-size:12px">days &nbsp;·&nbsp; blank = tool default (${cfg.claude_cleanup_default})</span>
+        placeholder="${def}" value="${days==null?"":days}" aria-label="Retention in days">
+      <span class="stg-hint">days<br>blank = tool default (${def})</span>
     </div>
-    <div style="display:flex;gap:8px;margin-top:14px">
-      <button class="btn" id="stgSave">Save</button>
+    <div class="stg-actions">
+      <button class="btn primary" id="stgSave">Save</button>
       <button class="btn" id="stgReset">Reset to default</button>
     </div>
-    <div id="stgMsg" style="margin-top:12px;font-size:12px;min-height:16px"></div>
-    <div class="dim" style="margin-top:18px;font-size:11px;word-break:break-all">
-      ${esc(cfg.claude_settings_path)}${cfg.claude_settings_exists?"":" (not created yet — will be on first save)"}</div>
+    <div class="stg-msg" id="stgMsg"></div>
+    <div class="stg-path"><b>Writes to</b><span>${esc(cfg.claude_settings_path)}</span>${
+      cfg.claude_settings_exists?"":"<br>Not created yet &mdash; it will be on first save."}
+      <br>Other settings in the file are preserved, and a <span>.bak</span> is kept.</div>
   `);
-  const msg=t=>{ document.getElementById("stgMsg").textContent=t; };
-  document.getElementById("stgSave").addEventListener("click",async()=>{
-    const raw=document.getElementById("stgDays").value.trim();
-    const value = raw===""?null:Number(raw);
-    if(value!==null && (!Number.isInteger(value) || value<1)){ msg("Enter a whole number of days, or leave it blank."); return; }
-    msg("Saving…");
+  const msgEl=document.getElementById("stgMsg");
+  const msg=(t,cls)=>{ msgEl.textContent=t; msgEl.className="stg-msg"+(cls?" "+cls:""); };
+  const send=async(value,okText,btn)=>{
+    const btns=[...document.querySelectorAll(".stg-actions .btn")];
+    btns.forEach(b=>b.disabled=true); msg("Saving\u2026");
     try{
-      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+      const r=await fetch("/api/settings",{method:"POST",
+        headers:{"Content-Type":"application/json"},
         body:JSON.stringify({cleanupPeriodDays:value})});
       const out=await r.json();
-      if(!r.ok) throw new Error(out.error||"save failed");
-      renderSettings(out); document.getElementById("stgMsg").textContent="Saved.";
-    }catch(e){ msg("Could not save: "+e.message); }
+      if(!r.ok) throw new Error(out.error||"request failed");
+      renderSettings(out); msg(okText,"ok");
+    }catch(e){ btns.forEach(b=>b.disabled=false); msg(e.message,"err"); }
+  };
+  document.getElementById("stgSave").addEventListener("click",()=>{
+    const raw=document.getElementById("stgDays").value.trim();
+    if(raw===""){ send(null,"Cleared \u2014 Claude Code's default now applies."); return; }
+    const v=Number(raw);
+    if(!Number.isInteger(v)||v<1||v>36500){
+      msg("Enter a whole number of days between 1 and 36500, or leave it blank.","err"); return; }
+    send(v,`Saved \u2014 transcripts now kept for ${v} day${v===1?"":"s"}.`);
   });
-  document.getElementById("stgReset").addEventListener("click",async()=>{
-    msg("Resetting…");
-    try{
-      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({cleanupPeriodDays:null})});
-      const out=await r.json();
-      if(!r.ok) throw new Error(out.error||"reset failed");
-      renderSettings(out); document.getElementById("stgMsg").textContent="Reset to tool default.";
-    }catch(e){ msg("Could not reset: "+e.message); }
-  });
+  document.getElementById("stgReset").addEventListener("click",()=>
+    send(null,"Reset \u2014 Claude Code's default now applies."));
 }
 
 /* ---------------- STORAGE ---------------- */

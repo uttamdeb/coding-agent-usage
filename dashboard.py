@@ -636,9 +636,41 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found", "text/plain")
 
+    def _csrf_ok(self):
+        """Reject cross-site writes.
+
+        The dashboard has no auth — it trusts anything that can reach the port.
+        A browser will happily let ANY page the user is visiting POST here: with
+        Content-Type text/plain the request is a CORS "simple request", so it is
+        sent with no preflight. The attacker cannot read our reply, but the write
+        still lands, which is enough to set cleanupPeriodDays=1 and make Claude
+        Code delete the user's transcripts. So: require a same-origin Origin (or
+        none, e.g. curl), and require a JSON content type, which forces a
+        preflight that we deliberately never answer.
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return False
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            allowed = {f"http://{self.headers.get('Host', '')}"}
+            host, _, port = (self.headers.get("Host") or "").partition(":")
+            if host in ("127.0.0.1", "localhost", "[::1]", "::1") and port:
+                allowed |= {f"http://127.0.0.1:{port}", f"http://localhost:{port}",
+                            f"http://[::1]:{port}"}
+            if origin not in allowed:
+                return False
+        return True
+
     def do_POST(self):
         route = self.path.split("?")[0]
         if route == "/api/settings":
+            if not self._csrf_ok():
+                self._send(403, json.dumps({"error": "cross-site request refused"}))
+                return
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw = self.rfile.read(length) if length else b"{}"
             try:

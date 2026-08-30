@@ -175,6 +175,15 @@ and extend this from that file).
 `index.html` (shell) · `static/app.css` · `static/core.js` · `static/charts.js` ·
 `static/views.js` · `chart.umd.min.js` (vendored Chart.js) · `AGENTS.md` · `run.sh`.
 
+## Contributing
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the setup, the hard rules
+(stdlib only, nothing hardcoded, never commit your cache), how to add a tool source or
+a model price, and how to test a change. **[AGENTS.md](AGENTS.md)** is the architecture
+guide. Please read the note on setting your git email before your first commit.
+
+Found a security problem? See **[SECURITY.md](SECURITY.md)** — don't open a public issue.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
