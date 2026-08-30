@@ -609,6 +609,10 @@ class Handler(BaseHTTPRequestHandler):
             self._file("index.html", "text/html; charset=utf-8")
         elif route == "/chart.js":
             self._file("chart.umd.min.js", "application/javascript")
+        elif route == "/manifest.json":
+            self._file("manifest.json", "application/manifest+json; charset=utf-8")
+        elif route == "/sw.js":
+            self._file("sw.js", "application/javascript; charset=utf-8")
         elif route.startswith("/static/"):
             self._static(route)
         elif route == "/api/storage":

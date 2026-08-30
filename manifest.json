@@ -1,0 +1,22 @@
+{
+  "name": "AI Usage Analytics",
+  "short_name": "AI Usage",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0e13",
+  "theme_color": "#3987e5",
+  "description": "Live local analytics for your AI coding-assistant usage.",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
