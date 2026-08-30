@@ -681,7 +681,6 @@ function viewStorage(){
   const st=STORAGE;
   const total=st.sources.reduce((a,s)=>a+s.bytes,0);
   const files=st.sources.reduce((a,s)=>a+s.files,0);
-  const archived=st.sources.reduce((a,s)=>a+s.archived_files,0);
   const extras=st.extras.reduce((a,e)=>a+e.bytes,0);
   const disk=st.disk||{total:0,free:0,used:0};
   const biggest=st.files[0];
@@ -690,10 +689,7 @@ function viewStorage(){
     {l:"Largest single log",v:biggest?fmtBytes(biggest.bytes):"—",s:biggest?SRC[biggest.source].label+" · "+biggest.project:""},
     {l:"Related, not analysed",v:fmtBytes(extras),s:"see the panel below"},
     {l:"Share of drive",v:disk.total?fmtPct(total/disk.total):"—",s:`of ${fmtBytes(disk.total)}`},
-    {l:"Free space left",v:fmtBytes(disk.free),s:disk.total?fmtPct(disk.free/disk.total)+" free":""},
-    {l:"vs. free space",v:disk.free?(total/disk.free).toFixed(1)+"×":"—",s:"logs relative to headroom"},
     {l:"Dashboard cache",v:fmtBytes(st.cache_bytes),s:".usage_cache.json"},
-    {l:"Pruned by the tools",v:fmtNum(archived),s:"still counted in analytics"},
   ].map(x=>`<div class="stat" style="flex:1 1 130px"><div class="l">${x.l}</div>
       <div class="v num">${x.v}</div><div class="s">${esc(x.s)}</div></div>`).join("");
 
