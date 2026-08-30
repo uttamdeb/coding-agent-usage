@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 21
+CACHE_VERSION = 22
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -118,6 +118,7 @@ def build_payload():
     hourly = {}       # (date, hour, source) -> {tokens, msgs}
     sessions = []
     model_meta = {}   # model -> vendor
+    ai_lines = {}     # date -> Cursor's suggested/accepted line counts
 
     with _lock:
         files = list(_state["files"].values())
@@ -164,6 +165,11 @@ def build_payload():
         pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
         pr["tokens"] += file_tokens; pr["msgs"] += file_msgs
         pr["sessions"] += 1; pr["cost"] += file_cost
+        for day, v in (agg.get("state", {}).get("ai_lines") or {}).items():
+            slot = ai_lines.setdefault(day, {"tab_suggested": 0, "tab_accepted": 0,
+                                             "composer_suggested": 0, "composer_accepted": 0})
+            for f in slot:
+                slot[f] += v.get(f, 0)
         # sessions
         for s in agg.get("sessions", []):
             s2 = dict(s)
@@ -214,6 +220,7 @@ def build_payload():
         "sessions": sessions[:2000],
         "sessions_total": len(sessions),
         "model_vendor": model_meta,
+        "ai_lines": [{"date": d, **v} for d, v in sorted(ai_lines.items())],
         "pricing": {k: list(v) for k, v in P.PRICING.items()},
         "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5 & 4.x "
                          "$5/$25, Sonnet 5 $2/$10 intro thru 2026-08-31 then $3/$15, Sonnet 4.x "
@@ -231,12 +238,11 @@ def build_payload():
                          "(file/repo context, system prompts, tool outputs), so they are a large "
                          "undercount. Copilot's accurate usage metric is request count (the 'Msgs' "
                          "column) and the premium-request multiplier, not tokens. "
-                         "Cursor: messages and tool calls are exact, but it stores tokens on only a "
-                         "few messages and no per-message model or cost (it meters usage server-side "
-                         "for its request-based plan) — so Cursor tokens/cost here are INCOMPLETE, a "
-                         "lower bound; see Cursor's own dashboard for real usage. Its session "
-                         "duration (Min) is unreliable and shown blank. Gemini is not shown: its "
-                         "local logs persist no usable prompt/token/model data."),
+                         "Cursor: messages, tool calls, per-session model, mode and timestamps are "
+                         "exact, but it records token counts on only ~2% of messages (it meters usage "
+                         "server-side for its request-based plan) — so Cursor tokens/cost here are a "
+                         "LOWER BOUND; see Cursor's own dashboard for real usage. Gemini is not shown: "
+                         "its local logs persist no usable prompt/token/model data."),
     }
 
 

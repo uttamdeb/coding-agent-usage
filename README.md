@@ -59,7 +59,7 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Claude Desktop** (agent mode) | `Claude/local-agent-mode-sessions/**` under App Support / `%APPDATA%` / `~/.config` | exact |
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning) |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
-| **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial (few messages carry tokens) |
+| **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **opencode** | `~/.local/share/opencode`, `%LOCALAPPDATA%\opencode`, `~/.opencode` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache) |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
@@ -136,8 +136,9 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
   models are estimates.
 - **These are API-equivalent values.** If you're on a subscription (Claude Max/Pro, Codex,
   Copilot), you don't pay per token — the $ is "what this would cost at API rates."
-- **Copilot / Cursor** don't log real token counts, so their tokens (and thus $) are rough;
-  their honest metric is **request count**.
+- **Copilot / Cursor** don't log real token counts, so their tokens (and thus $) are rough.
+  Copilot's honest metric is **request count** and its **premium-request** total (both shown);
+  Cursor's is **messages, tool calls and AI lines kept** (also shown).
 - A model with no price row reads as **$0** — add it to `PRICING` (see below).
 
 ## Note on log retention
