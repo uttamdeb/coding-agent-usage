@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 24
+CACHE_VERSION = 25
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -99,7 +99,11 @@ def refresh(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None):
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None):
+    # opencode logs the actual per-message cost in its SQLite database; use it
+    # when available and fall back to list-price estimation for everything else.
+    if source == "opencode" and logged_cost is not None:
+        return logged_cost
     pin, pout, pcw5, pcw1, pcr = P.price_of(model)
     # Claude Sonnet 5 introductory pricing ($2/$10) through 2026-08-31
     if model == "Claude Sonnet 5" and date and date <= "2026-08-31":
@@ -143,7 +147,8 @@ def build_payload():
                 slot[f] += r.get(f, 0)
             slot["prem"] += r.get("prem", 0.0)
             c = _cost(source, model, r["in"], r["out"], r["cr"],
-                      r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date)
+                      r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
+                      logged_cost=r.get("cost") if source == "opencode" else None)
             slot["cost"] += c
             model_meta[model] = P.vendor_of(model)
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
@@ -209,7 +214,8 @@ def build_payload():
             s2["archived"] = bool(agg.get("archived"))
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
-                               (s.get("end") or s.get("start") or "")[:10])
+                               (s.get("end") or s.get("start") or "")[:10],
+                               logged_cost=s.get("cost") if source == "opencode" else None)
             sessions.append(s2)
 
     rec_list = []
