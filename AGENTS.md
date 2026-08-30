@@ -12,7 +12,8 @@ leaves the machine.** Python **standard library only** — there is nothing to `
 ```bash
 python3 dashboard.py          # then open http://127.0.0.1:7878
 ```
-- Requires Python 3.8+. macOS or Linux. No dependencies, no API keys, no config.
+- Requires Python 3.8+. macOS, Linux or Windows (`run.cmd` there). No dependencies, no API
+  keys, no config.
 - **First run** parses all local logs and can take ~30–60s if there are large Codex logs;
   it writes a cache (`.usage_cache.json`) and every later refresh is incremental (~ms).
 - Useful flags: `--port 9000`, `--rebuild` (ignore cache & full re-parse), `--interval 20`
@@ -23,15 +24,34 @@ If the user just says "run/launch the dashboard": check if it's already up
 (`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7878/api/data`); if not, start it.
 
 ## How it works (architecture)
-- `dashboard.py` — stdlib `http.server`. Serves `/` (the HTML), `/chart.js` (vendored
-  Chart.js), `/api/data` (aggregated JSON), `/api/refresh`. Owns the cache, the per-file
-  aggregate merge, and cost computation (`_cost`).
+- `dashboard.py` — stdlib `http.server`. Serves `/` (the shell), `/static/*` (css + js),
+  `/chart.js` (vendored Chart.js), `/api/data` (aggregated JSON), `/api/storage`
+  (on-disk footprint), `/api/refresh`. Owns the cache, the per-file aggregate merge, and
+  cost computation (`_cost`).
 - `parser.py` — discovers each tool's log files and parses them into per-file aggregates.
   `discover()` lists sources; `update_file()` routes each to a `parse_*` function;
   incremental (append-only `.jsonl` read by byte offset; rewritten stores re-read on change).
-  `PRICING` (USD per 1M tokens) and the model-name normalizers live here.
-- `index.html` — single-page frontend (vanilla JS + Chart.js). `SRC`/`ORDER` define the
-  tools; filtering/aggregation happen client-side from `/api/data`.
+  `PRICING` (USD per 1M tokens) and the model-name normalizers live here. Aggregates are
+  keyed `records["date\tmodel"]`, `tools["date\tname"]`, `hourly["date\thour"]` — every
+  dimension carries a date so the UI can filter by range.
+- Frontend (no build step, no framework, classic `<script>` tags in this order):
+  - `index.html` — shell: header, tabs, filter bar, the seven view sections' card markup.
+  - `static/app.css` — design tokens (light/dark), layout, components.
+  - `static/core.js` — `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering.
+  - `static/charts.js` — Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG.
+  - `static/views.js` — the seven views, controls, events, boot.
+
+## Views
+Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions · Storage.
+Tab state lives in `location.hash`; `?theme=dark|light|auto` and `?range=30d` preset the UI
+(handy for headless screenshots).
+
+## Colour rules — do not change casually
+Tool series colours and the `ORDER` array in `static/core.js` are a **validated** categorical
+palette: adjacent-pair CVD ΔE >= 8 and normal-vision ΔE >= 15 in *both* light and dark. The
+order IS the safety mechanism. If you reorder tools or change a hue, re-validate the whole
+sequence before shipping (the data-viz skill's `validate_palette.js`), and keep the legend +
+tooltips (identity must never be colour-alone).
 
 ## Sources covered
 Claude Code (`~/.claude/projects`), Claude Desktop agent mode, Codex (`~/.codex/sessions`),
@@ -50,8 +70,25 @@ nothing. Paths are derived from `$HOME` / XDG, so it works on any user's machine
      a normalizer change needs a `--rebuild` (bump `CACHE_VERSION` in `dashboard.py`).
 - **Add a whole new tool source** → in `parser.py`: add its path(s), emit entries from
   `discover()`, write a `parse_<tool>()`, route it in `update_file()`. Then add the tool to
-  `SRC` and `ORDER` (+ a chip and `--var`/`.s-`/`.b-` CSS classes) in `index.html`, and bump
-  `CACHE_VERSION`. Attribute by *which tool's log the record came from*, never by model name.
+  `SRC`/`ORDER` in `static/core.js` and a `--t-<source>` colour token in `static/app.css`
+  (see the colour rules above), and bump `CACHE_VERSION`. Attribute by *which tool's log the
+  record came from*, never by model name.
+- **Anything that changes an aggregate's shape** (new field, new key format) needs a
+  `CACHE_VERSION` bump in `dashboard.py` + a `--rebuild` (~45s here).
+- **Testing a UI change**: headless Chrome catches render failures — uncaught errors and
+  caught render errors both land on `document.documentElement.dataset.jsError`:
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+     --virtual-time-budget=9000 --dump-dom "http://127.0.0.1:7878/#cost" | grep data-js-error`
+  Add `--screenshot=out.png --window-size=1560,2000` to eyeball it.
+
+## Portability rules
+- **Never hardcode a path.** Everything derives from `HOME` / `%APPDATA%` / `%LOCALAPPDATA%` /
+  `$XDG_*` at import time (`_editor_roots`, `_app_support_roots`, `_opencode_roots`). A user on
+  another machine or OS must see their own data with zero configuration.
+- Log files can be *written* on one OS and read on another, so split path components with
+  `_leaf()` (handles `/` and `\\`), not `os.path.basename` alone.
+- Anything shown to the user as a shell command must be built server-side from real discovered
+  paths and `os.name` (`_cleanup_plan`) — never a hardcoded `~/Library/...` string in the UI.
 
 ## Rules
 - **Never commit `.usage_cache.json`** (or `server.log`). They contain the user's own usage
