@@ -307,8 +307,11 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 /* ---------- optimize: finding cards ---------- */
 .finding{border:1px solid var(--border);border-left:3px solid var(--border-2);
   border-radius:var(--radius-xs);padding:14px 16px;margin-bottom:11px;background:var(--surface-2)}
-.finding.sev-high{border-left-color:var(--warn)}
-.finding.sev-info{border-left-color:var(--accent)}
+/* NB: no severity colours here. --accent equals --t-opencode exactly and --warn
+   collides with --t-claude-desktop, so a severity stripe read as a tool colour.
+   The stripe is set inline to the finding's own --t-<source>; this is the fallback
+   for findings that span several tools. */
+.finding.sev-neutral{border-left-color:var(--border-2)}
 .finding-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
 .finding-title{font-size:14px;font-weight:640;color:var(--text);line-height:1.35}
 .finding-impact{text-align:right;font-size:16px;font-weight:650;color:var(--text);white-space:nowrap}

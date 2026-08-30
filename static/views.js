@@ -1507,6 +1507,24 @@ const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTa
    /compact advice is Claude Code's, and a Codex or Cursor user should not read it
    as advice about their own setup. Nothing is labelled when it spans every tool
    present in the range, because then the label is noise. */
+/* The left stripe carries TOOL identity, using the very same --t-<source> tokens as
+   every chart and badge in the app — so orange still means Claude Code and green
+   still means Codex here. It is only painted when exactly one tool is in scope;
+   a finding spanning several has no single owner and stays neutral.
+
+   It deliberately does NOT encode severity any more. --accent is byte-identical to
+   --t-opencode and --warn sits on top of --t-claude-desktop, so a severity stripe
+   was painting findings in tool colours that had nothing to do with the tool. */
+function stripeClass(f){
+  const t=(f.tools||[]).filter(Boolean);
+  return t.length===1 && SRC[t[0]] ? "" : " sev-neutral";
+}
+function stripeStyle(f){
+  const t=(f.tools||[]).filter(Boolean);
+  if(t.length!==1 || !SRC[t[0]]) return "";
+  return ` style="border-left-color:var(${SRC[t[0]].v})"`;
+}
+
 function scopeLabel(f){
   const t = (f.tools||[]).filter(Boolean);
   if(!t.length) return "";
@@ -1545,7 +1563,7 @@ function viewOptimize(d){
     return;
   }
   host.innerHTML = found.map(f => `
-    <div class="finding sev-${f.sev}">
+    <div class="finding${stripeClass(f)}"${stripeStyle(f)}>
       <div class="finding-head">
         <div>
           <div class="finding-title">${f.title}</div>

@@ -118,6 +118,14 @@ ran) and candidate swaps come from `cheaperPeer()`, which only ever suggests a m
 they already use from the same maker. A finder that named specific models would go
 stale and would be wrong for anyone whose mix differs.
 
+A finding's left stripe carries **tool identity**, painted from the same
+`--t-<source>` token as every chart and badge — orange is still Claude Code, green
+still Codex. It is only painted when exactly one tool is in scope; a finding spanning
+several has no single owner and stays neutral. It must never encode severity again:
+`--accent` is byte-identical to `--t-opencode` and `--warn` collides with
+`--t-claude-desktop`, so a severity stripe silently painted findings in the colour of
+a tool they had nothing to do with.
+
 Each finding sets `tools: [...]`. `scopeLabel()` renders a "<tool> only" chip when a
 finding does not span every source present in the range — the MCP, Skills and
 `/compact` advice is Claude Code's, and a Codex or Cursor user must not read it as
