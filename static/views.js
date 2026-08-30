@@ -1192,7 +1192,7 @@ function findCacheWaste(d){
   const cc = bad.reduce((a,s)=>a+s.cc,0);
   const est = bad.reduce((a,s)=>a + s.cc/1e6 * 5, 0);   // ~1.25x a $4-ish blended input
   return {
-    id:"cache-waste", impact: est, sev: est>5?"high":"low",
+    id:"cache-waste", impact: est, sev: est>5?"high":"low", tools:[...new Set(bad.map(x=>x.source))],
     title:"Cache written but never read back",
     body:`${bad.length} session${bad.length>1?"s":""} wrote <b>${fmtNum(cc)}</b> cache tokens and `
       +`read back less than half of it. A cache write costs 1.25–2× the input rate and only pays `
@@ -1204,23 +1204,69 @@ function findCacheWaste(d){
   };
 }
 
-/* An expensive model doing light work. Priced honestly: recompute the SAME tokens
-   at the cheapest same-family model actually present in the data. */
+/* An expensive model doing light work.
+
+   Nothing here is a hardcoded model list. The candidate replacements are the models
+   THIS user actually ran, priced from the rates the server sent, so it stays true as
+   models come and go and reflects what they realistically have access to. */
+function priceOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
+function costAt(m, t){
+  const p = priceOf(m); if(!p) return null;
+  const [pin,pout,pcw5,pcw1,pcr] = p;
+  return ((t.in||0)*pin + (t.out||0)*pout + (t.cr||0)*pcr
+        + (t.cc5||t.cc||0)*pcw5 + (t.cc1||0)*pcw1) / 1e6;
+}
+/* The cheapest model the user ALSO used from the same vendor — a realistic swap,
+   not a recommendation to adopt something they've never touched. */
+function cheaperPeer(model, usedModels){
+  const p = priceOf(model); if(!p || !p[1]) return null;
+  const vendor = (RAW.model_vendor||{})[model];
+  let best=null, bestOut=p[1];
+  for(const m of usedModels){
+    if(m===model) continue;
+    if((RAW.model_vendor||{})[m] !== vendor) continue;
+    const q = priceOf(m);
+    if(q && q[1] && q[1] < bestOut){ bestOut=q[1]; best=m; }
+  }
+  return best;
+}
 function findModelFit(d){
-  const heavy = ["Claude Opus 5","Claude Opus 4.8","Claude Opus 4.7","Claude Opus 4.6","Claude Fable 5"];
-  const light = d.sessions.filter(s => heavy.includes(s.model) && s.out < 4000 && s.tools <= 3 && s.cost > 0.05);
-  if(light.length < 3) return null;
-  const spend = light.reduce((a,s)=>a+s.cost,0);
+  const usedModels = [...new Set(d.recs.filter(r=>r.model!=="(user)").map(r=>r.model))];
+  const groups = {};
+  for(const s of d.sessions){
+    if(s.subagent) continue;
+    // "light work": short answer, barely any tool use — the shape where a smaller
+    // model rarely shows a quality difference. Thresholds are on the session's own
+    // output, not on any particular model's name.
+    if(!(s.out < 4000 && s.tools <= 3 && s.cost > 0.02)) continue;
+    (groups[s.model] = groups[s.model] || []).push(s);
+  }
+  const rows=[]; let saving=0, n=0, srcs=new Set();
+  for(const [model, list] of Object.entries(groups)){
+    const alt = cheaperPeer(model, usedModels);
+    if(!alt) continue;
+    let now=0, then=0;
+    for(const s of list){
+      const at = costAt(alt, s);
+      if(at===null) continue;
+      now += s.cost; then += at; srcs.add(s.source);
+    }
+    if(then >= now || now-then < 0.5) continue;
+    saving += now-then; n += list.length;
+    rows.push([`${list.length} session${list.length>1?"s":""} on ${model}`,
+               `→ ${alt}`, fmtUSD(now)+" spent", fmtUSD(now-then)+" saved"]);
+  }
+  if(!rows.length) return null;
+  rows.sort((a,b)=>parseFloat(b[3].replace(/[^0-9.]/g,""))-parseFloat(a[3].replace(/[^0-9.]/g,"")));
   return {
-    id:"model-fit", impact: spend*0.6, sev: spend>20?"high":"low",
-    title:"A top-tier model doing very light work",
-    body:`${light.length} sessions ran on an Opus/Fable-class model but produced under 4k output `
-      +`tokens and 3 or fewer tool calls — costing <b>${fmtUSD(spend)}</b>. Sonnet is roughly 2.5× `
-      +`cheaper per output token and Haiku 5×; for short answers the quality gap rarely shows.`,
-    todo:"For quick lookups and one-shot questions, start the session on a smaller model — "
-      +"in Claude Code, /model sonnet.",
-    rows: light.sort((a,b)=>b.cost-a.cost).slice(0,5).map(s=>
-      [sessName(s), s.model, `${fmtNum(s.out)} out · ${s.tools} tools`, fmtUSD(s.cost)])
+    id:"model-fit", impact: saving, sev: saving>20?"high":"low", tools:[...srcs],
+    title:"A costly model doing very light work",
+    body:`${n} session${n>1?"s":""} produced under 4k output tokens with 3 or fewer tool calls, `
+      +`yet ran on a model you also pay a premium for. Re-priced at the cheapest model of the `
+      +`same maker <i>you already use</i>, the same tokens would have cost `
+      +`<b>${fmtUSD(saving)}</b> less.`,
+    todo:"For quick lookups and one-shot questions, start the session on the smaller model.",
+    rows
   };
 }
 
@@ -1243,7 +1289,7 @@ function findIdleMCP(d){
   });
   if(!idle.length) return null;
   return {
-    id:"idle-mcp", impact: 0, sev:"info",
+    id:"idle-mcp", impact: 0, sev:"info", tools:["claude"],
     title:`${idle.length} MCP server${idle.length>1?"s":""} configured but never called`,
     body:`Every connected MCP server's tool definitions are injected into the system prompt of `
       +`<b>every request</b>, whether you use them or not. These ${idle.length} were not called `
@@ -1263,7 +1309,7 @@ function findThinking(d){
   if(!out || reason/out < 0.15) return null;
   const share = reason/out;
   return {
-    id:"thinking", impact: cost*share*0.3, sev: share>0.3?"high":"low",
+    id:"thinking", impact: cost*share*0.3, sev: share>0.3?"high":"low", tools:[...new Set(d.recs.filter(r=>r.reason).map(r=>r.source))],
     title:"Extended thinking is a large share of your output",
     body:`<b>${fmtNum(reason)}</b> of ${fmtNum(out)} output tokens (${fmtPct(share)}) were `
       +`thinking tokens, billed at the full output rate.`,
@@ -1284,7 +1330,7 @@ function findContextTax(d){
   if(!bad.length) return null;
   const excess = bad.reduce((a,s)=>a + (s.cost - med*s.user), 0);
   return {
-    id:"context-tax", impact: Math.max(excess,0), sev: excess>50?"high":"low",
+    id:"context-tax", impact: Math.max(excess,0), sev: excess>50?"high":"low", tools:[...new Set(bad.map(x=>x.source))],
     title:"Long sessions re-reading a very large context",
     body:`${bad.length} session${bad.length>1?"s":""} cost more than 8× your median of `
       +`<b>${fmtUSD2(med)}</b> per prompt. Every turn re-reads the whole conversation, so a session `
@@ -1304,7 +1350,7 @@ function findSubagents(d){
   const spend = heavy.reduce((a,s)=>a+s.cost,0);
   const used = parents.filter(s => s.side > 0).length;
   return {
-    id:"subagents", impact: spend*0.15, sev: spend>100?"high":"low",
+    id:"subagents", impact: spend*0.15, sev: spend>100?"high":"low", tools:[...new Set(heavy.map(x=>x.source))],
     title:"Tool-heavy sessions that never delegated to a subagent",
     body:`${heavy.length} session${heavy.length>1?"s":""} made 150+ tool calls without spawning a `
       +`subagent, costing <b>${fmtUSD(spend)}</b>. ${used ? `You do use them elsewhere (${used} `
@@ -1324,7 +1370,7 @@ function findLowCache(d){
   if(!ctx || cr/ctx >= 0.7) return null;
   const rate = cr/ctx;
   return {
-    id:"low-cache", impact: 0, sev: rate<0.4?"high":"low",
+    id:"low-cache", impact: 0, sev: rate<0.4?"high":"low", tools:[...new Set(d.recs.filter(r=>r.cr||r.cc).map(r=>r.source))],
     title:"Prompt cache is doing less work than it could",
     body:`Only <b>${fmtPct(rate)}</b> of your context tokens came from cache. A cache read costs `
       +`a tenth of a fresh input token, so the gap is close to pure overhead.`,
@@ -1351,7 +1397,7 @@ function findSkills(d){
   const spend=rows.reduce((a,[,v])=>a+v.cost,0);
   if(!spend) return null;
   return {
-    id:"skills", impact: 0, sev:"info",
+    id:"skills", impact: 0, sev:"info", tools:["claude"],
     title:"Where your Skills are spending",
     body:`Skills drove <b>${fmtUSD(spend)}</b>${total?` of ${fmtUSD(total)} (${fmtPct(spend/total)})`:""} `
       +`in this range. A skill that runs often carries its whole instruction file into context `
@@ -1379,7 +1425,7 @@ function findBigContext(d){
   const total=d.recs.reduce((a,r)=>a+(r.cost||0),0);
   const order=["0-50k","50-150k","150-400k","400k+"];
   return {
-    id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low",
+    id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low", tools:["claude"],
     title:`${fmtPct(share)} of your tokens were sent at over 150k context`,
     body:`Every turn re-sends the whole conversation. Past roughly 150k the re-read dominates `
       +`the bill even when it is cached, because a cache read is charged per token too.`,
@@ -1400,7 +1446,7 @@ function findSubagentShare(d){
   const total=d.sessions.reduce((a,s)=>a+s.cost,0);
   if(!total || subCost/total < 0.2) return null;
   return {
-    id:"subagent-share", impact: 0, sev:"info",
+    id:"subagent-share", impact: 0, sev:"info", tools:[...new Set(subs.map(x=>x.source))],
     title:`${fmtPct(subCost/total)} of your spend ran inside subagents`,
     body:`${fmtNum(subs.length)} subagent transcript${subs.length>1?"s":""} cost <b>${fmtUSD(subCost)}</b>. `
       +`Each subagent runs its own request loop with its own context, which is exactly why they keep `
@@ -1416,7 +1462,23 @@ const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTa
                      findSubagents, findSubagentShare, findSkills, findIdleMCP,
                      findThinking, findLowCache];
 
+/* Say plainly when a suggestion only applies to one tool — the MCP, Skills and
+   /compact advice is Claude Code's, and a Codex or Cursor user should not read it
+   as advice about their own setup. Nothing is labelled when it spans every tool
+   present in the range, because then the label is noise. */
+function scopeLabel(f){
+  const t = (f.tools||[]).filter(Boolean);
+  if(!t.length) return "";
+  const present = new Set(SLICE_SOURCES);
+  if(t.length >= present.size && [...present].every(x=>t.includes(x))) return "";
+  const names = t.map(x=>(SRC[x]||{label:x}).label);
+  return `<div class="finding-scope">${names.map(n=>
+    `<span class="scope-chip">${esc(n)} only</span>`).join("")}</div>`;
+}
+let SLICE_SOURCES=[];
+
 function viewOptimize(d){
+  SLICE_SOURCES=[...new Set(d.recs.map(r=>r.source))];
   const found = OPT_FINDERS.map(f => { try{ return f(d); }catch(e){ return null; } })
                            .filter(Boolean)
                            .sort((a,b) => b.impact - a.impact);
@@ -1442,7 +1504,10 @@ function viewOptimize(d){
   host.innerHTML = found.map(f => `
     <div class="finding sev-${f.sev}">
       <div class="finding-head">
-        <div class="finding-title">${f.title}</div>
+        <div>
+          <div class="finding-title">${f.title}</div>
+          ${scopeLabel(f)}
+        </div>
         ${f.impact > 0.5 ? `<div class="finding-impact num">${fmtUSD(f.impact)}<span>est. saving</span></div>` : ""}
       </div>
       <div class="finding-body">${f.body}</div>

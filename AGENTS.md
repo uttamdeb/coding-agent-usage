@@ -112,6 +112,18 @@ Findings are computed client-side in `static/views.js` by the functions in
 apply — **never render a finding that isn't backed by the user's own numbers**, and
 every one must carry the figure it came from plus something concrete to do.
 
+**Never hardcode a model name, price or tool list into a finding.** Savings are
+re-priced from `RAW.prices` (the real per-1M rates for the models that user actually
+ran) and candidate swaps come from `cheaperPeer()`, which only ever suggests a model
+they already use from the same maker. A finder that named specific models would go
+stale and would be wrong for anyone whose mix differs.
+
+Each finding sets `tools: [...]`. `scopeLabel()` renders a "<tool> only" chip when a
+finding does not span every source present in the range — the MCP, Skills and
+`/compact` advice is Claude Code's, and a Codex or Cursor user must not read it as
+advice about their own setup. No chip is shown when it applies to everything, since
+then the label is noise.
+
 It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
 drove a request — this is how "/dataviz cost you $20" is possible), a per-request
 context-size histogram (`agg["ctx"]`, bucketed 0-50k / 50-150k / 150-400k / 400k+),

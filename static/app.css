@@ -323,3 +323,18 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .finding-tbl td{padding:4px 8px 4px 0;border-top:1px solid var(--border);color:var(--text-2)}
 .finding-tbl td.name{color:var(--text);max-width:290px;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- Optimize: a distinct tab, not one of the regulars ---------- */
+nav.tabs .tab-gap{flex:1 1 auto;min-width:14px}
+nav.tabs button.tab-special{color:var(--accent);font-weight:640;border-bottom-color:transparent;
+  background:var(--accent-soft);border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+  padding-left:13px;padding-right:13px}
+nav.tabs button.tab-special .spark{margin-right:6px;font-size:11px;opacity:.9}
+nav.tabs button.tab-special:hover{color:var(--accent);filter:brightness(1.08)}
+nav.tabs button.tab-special.on{border-bottom-color:var(--accent);color:var(--accent)}
+
+/* which tool a suggestion applies to */
+.finding-scope{margin-top:5px;display:flex;gap:5px;flex-wrap:wrap}
+.scope-chip{display:inline-block;font-size:10px;font-weight:600;letter-spacing:.2px;
+  color:var(--text-3);background:var(--surface-3);border:1px solid var(--border);
+  border-radius:4px;padding:1px 6px}

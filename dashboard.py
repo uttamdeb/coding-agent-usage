@@ -288,6 +288,9 @@ def build_payload():
         "generated_at": time.time(),
         "meta": dict(_meta),
         "mcp_servers": _mcp_servers(),
+        # Real per-1M rates for the models THIS user actually ran, so the client can
+        # cost a "what if this had run on X" without any hardcoded model list.
+        "prices": {m: list(P.price_of(m)) for m in model_meta},
         "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
         "ctx": [{"date": d, "bucket": b, **v} for (d, b), v in ctxb.items()],
         "records": rec_list,
