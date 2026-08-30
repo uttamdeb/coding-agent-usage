@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 25
+CACHE_VERSION = 24
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -99,13 +99,7 @@ def refresh(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None):
-    # opencode's SQLite store logs the actual per-message cost; prefer it over a
-    # list-price estimate. Callers pass None (not 0.0) when there is no logged
-    # figure — the older opencode JSON layout records no cost at all, and
-    # treating its 0.0 as authoritative would zero out those installs.
-    if source == "opencode" and logged_cost is not None:
-        return logged_cost
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None):
     pin, pout, pcw5, pcw1, pcr = P.price_of(model)
     # Claude Sonnet 5 introductory pricing ($2/$10) through 2026-08-31
     if model == "Claude Sonnet 5" and date and date <= "2026-08-31":
@@ -131,11 +125,6 @@ def build_payload():
 
     for agg in files:
         source = agg["source"]
-        # Only the SQLite store records a real per-message cost. The older
-        # opencode JSON layout logs none, so its records carry a placeholder
-        # 0.0 that must NOT be mistaken for "this was free".
-        has_logged_cost = (source == "opencode"
-                           and str(agg.get("path", "")).endswith(".db"))
         project = agg.get("project") or "(unknown)"
         file_tokens = 0
         file_msgs = 0
@@ -154,8 +143,7 @@ def build_payload():
                 slot[f] += r.get(f, 0)
             slot["prem"] += r.get("prem", 0.0)
             c = _cost(source, model, r["in"], r["out"], r["cr"],
-                      r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
+                      r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date)
             slot["cost"] += c
             model_meta[model] = P.vendor_of(model)
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
@@ -221,8 +209,7 @@ def build_payload():
             s2["archived"] = bool(agg.get("archived"))
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
-                               (s.get("end") or s.get("start") or "")[:10],
-                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None)
+                               (s.get("end") or s.get("start") or "")[:10])
             sessions.append(s2)
 
     rec_list = []
