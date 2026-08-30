@@ -71,12 +71,20 @@ tooltips (identity must never be colour-alone).
   `result.details` ("... • 1x"); that is its real billing unit.
 - **Gemini CLI** is deliberately not parsed — re-verified: its `chats/*.jsonl` still
   persist only session bookkeeping, no prompts/tokens/model.
+- **Hermes Agent** (`~/.hermes/state.db`, or `$HERMES_HOME`/`%LOCALAPPDATA%\hermes` on native
+  Windows): one SQLite store for every session, same shape as Cursor. Unlike Cursor, it logs a
+  REAL per-model input/output/cache/reasoning token breakdown (`session_model_usage`), so
+  `exact:true` in `static/core.js`. `messages.tool_calls` is a JSON array (OpenAI tool-call
+  shape) read only for per-day tool-name counts and per-day assistant/user turn counts — message
+  `content` is never read. A session can switch models mid-way (`session_model_usage` has one row
+  per model actually used), same as Codex.
 
 ## Sources covered
 Claude Code (`~/.claude/projects`), Claude Desktop agent mode, Codex (`~/.codex/sessions`),
 GitHub Copilot (VS Code/Insiders/Cursor `chatSessions`), Cursor native AI (`state.vscdb`),
-and opencode (`~/.local/share/opencode/storage/message`). Missing tools simply contribute
-nothing. Paths are derived from `$HOME` / XDG, so it works on any user's machine.
+opencode (`~/.local/share/opencode/storage/message`), and Hermes Agent (`~/.hermes/state.db`).
+Missing tools simply contribute nothing. Paths are derived from `$HOME` / XDG, so it works on
+any user's machine.
 
 ## Common tasks
 - **A new model shows $0 / an unknown name** → add/fix it in `parser.py`:
