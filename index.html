@@ -3,8 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#3987e5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AI Usage">
 <title>AI Usage Analytics</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0e13%22%2F%3E%3Crect%20x%3D%225.5%22%20y%3D%2217%22%20width%3D%225%22%20height%3D%229%22%20rx%3D%222.5%22%20fill%3D%22%233987e5%22%2F%3E%3Crect%20x%3D%2213.5%22%20y%3D%2211%22%20width%3D%225%22%20height%3D%2215%22%20rx%3D%222.5%22%20fill%3D%22%23199e70%22%2F%3E%3Crect%20x%3D%2221.5%22%20y%3D%225%22%20width%3D%225%22%20height%3D%2221%22%20rx%3D%222.5%22%20fill%3D%22%23d95926%22%2F%3E%3Ccircle%20cx%3D%2224%22%20cy%3D%225%22%20r%3D%223.4%22%20fill%3D%22%230b0e13%22%2F%3E%3Ccircle%20cx%3D%2224%22%20cy%3D%225%22%20r%3D%222.2%22%20fill%3D%22%23e9eef5%22%2F%3E%3C%2Fsvg%3E">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/chart.js"></script>
 </head>
@@ -308,6 +314,10 @@ addEventListener("error",e=>{document.documentElement.dataset.jsError=
   (e.message||"error")+" @ "+(e.filename||"").split("/").pop()+":"+(e.lineno||0);});
 addEventListener("unhandledrejection",e=>{document.documentElement.dataset.jsError=
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason);});
+/* register PWA service worker */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
 </script>
 <script src="/static/core.js"></script>
 <script src="/static/charts.js"></script>
