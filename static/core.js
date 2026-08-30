@@ -12,8 +12,9 @@ const SRC = {
   cursor:           {label:"Cursor",         v:"--t-cursor",          exact:false},
   "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true },
   opencode:         {label:"opencode",       v:"--t-opencode",        exact:true },
+  hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true },
 };
-const ORDER = ["claude","codex","copilot","cursor","claude-desktop","opencode"];
+const ORDER = ["claude","codex","copilot","cursor","claude-desktop","opencode","hermes"];
 const PROVIDERS = ["Anthropic","OpenAI","Google","Other"];
 const PROV_VAR = {Anthropic:"--p-anthropic",OpenAI:"--p-openai",Google:"--p-google",Other:"--p-other"};
 const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];

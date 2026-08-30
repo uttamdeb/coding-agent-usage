@@ -2,7 +2,7 @@
 """
 dashboard.py — Live local usage analytics for your AI coding tools.
 
-Covers Claude Code, Claude Desktop, Codex, GitHub Copilot, Cursor and opencode.
+Covers Claude Code, Claude Desktop, Codex, GitHub Copilot, Cursor, opencode and Hermes Agent.
 Parses your local interaction logs (no data leaves the machine), aggregates usage by
 day / model / tool / project / hour, and serves an interactive dashboard.
 
@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 24
+CACHE_VERSION = 25
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -407,8 +407,8 @@ def _cleanup_targets():
 
     Derived from the same globs `parser.discover()` scans, so the commands and the
     "reclaimable" figure are two views of ONE rule and cannot drift apart.
-    Cursor is absent on purpose: it keeps a single live SQLite store, and deleting
-    it would destroy its chat history rather than reclaim stale logs.
+    Cursor and Hermes are absent on purpose: each keeps a single live SQLite store,
+    and deleting it would destroy its chat history rather than reclaim stale logs.
     """
     t = []
     for g in P.CLAUDE_GLOBS + P.CODEX_GLOBS:
