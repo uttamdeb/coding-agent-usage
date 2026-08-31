@@ -613,6 +613,9 @@ def parse_codex(agg, lines):
             # A spawned subagent's OWN rollout file self-identifies — no cross-file
             # correlation needed, unlike Claude Code's isSidechain records which live
             # inside the parent's log.
+            # full thread id — the filename is truncated to 8 chars in the session
+            # dict, but the editor-state lookup needs the whole UUID
+            agg["_session_id"] = pl.get("id") or pl.get("session_id") or agg.get("_session_id")
             if pl.get("thread_source") == "subagent":
                 agg["subagent"] = True
                 # Stashed, not titled yet: many subagent transcripts carry no
@@ -1886,6 +1889,49 @@ def update_file(agg, source, path, editor_hint, proj_map):
 # Antigravity and the log still says vscode — the host is genuinely not recorded, so
 # those land under "VS Code" and cannot be split further from the log alone.
 # ---------------------------------------------------------------------------
+# Codex's own log says only "vscode" — it never records WHICH VS Code variant
+# hosted it, so Insiders work is indistinguishable from stable from the rollout
+# alone. The editor itself does know: its globalStorage/state.vscdb carries the
+# Codex extension's per-thread UI state under "openai.chatgpt", and a thread id
+# appearing there means that editor opened it. Build {thread id -> editor} from
+# every known editor and use it to recover the variant.
+#
+# A thread present in TWO editors' state is genuinely ambiguous (it was opened in
+# both) and is deliberately left unattributed rather than guessed.
+_VSCODE_THREADS = {"at": 0.0, "map": {}}
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _vscode_thread_owners():
+    """{codex thread id: editor label} for threads owned by exactly one editor."""
+    if time.time() - _VSCODE_THREADS["at"] < 60:
+        return _VSCODE_THREADS["map"]
+    per = {}
+    for root in COPILOT_ROOTS:
+        db = os.path.join(root, "User", "globalStorage", "state.vscdb")
+        if not os.path.exists(db):
+            continue
+        label = EDITOR_LABEL.get(os.path.basename(root), os.path.basename(root))
+        try:
+            con = _open_ro_sqlite(db)
+            row = con.execute(
+                "SELECT value FROM ItemTable WHERE key='openai.chatgpt'").fetchone()
+            con.close()
+        except Exception as e:
+            sys.stderr.write(f"[ide] {db}: {type(e).__name__}: {e}\n")
+            continue
+        if not row or not row[0]:
+            continue
+        v = row[0]
+        if isinstance(v, bytes):
+            v = v.decode("utf-8", "replace")
+        for tid in set(_UUID_RE.findall(v)):
+            per.setdefault(tid, set()).add(label)
+    out = {t: next(iter(owners)) for t, owners in per.items() if len(owners) == 1}
+    _VSCODE_THREADS.update(at=time.time(), map=out)
+    return out
+
+
 IDE_FROM_ENTRY = {
     "claude-vscode": "VS Code",
     "codex_vscode": "VS Code",
@@ -1919,9 +1965,13 @@ def _ide_of(source, agg, editor_hint=None):
         # the editor whose storage this file came out of
         return agg.get("editor") or editor_hint or "VS Code"
     entry = (agg.get("entry") or "").strip()
-    if entry:
-        return IDE_FROM_ENTRY.get(entry.lower(), entry)
-    return "CLI"
+    ide = IDE_FROM_ENTRY.get(entry.lower(), entry) if entry else "CLI"
+    # Recover the VS Code variant for Codex, which only ever logs "vscode".
+    if source == "codex" and ide == "VS Code":
+        owner = _vscode_thread_owners().get(agg.get("_session_id") or "")
+        if owner:
+            return owner
+    return ide
 
 
 def _finalize_session(agg, source, path):

@@ -65,9 +65,18 @@ Copilot's comes from *which editor's storage* the file sat in, Claude/Codex stam
 place. An unrecognised entrypoint passes through **as itself** rather than being forced
 into a bucket, so a new host appears rather than silently becoming "VS Code".
 
-**Known limit:** `claude-vscode` and `codex_vscode` name the VS Code *extension*, not
-the fork hosting it. Run either inside Cursor, Windsurf or Antigravity and the log still
-says vscode — the host genuinely isn't recorded, so it cannot be split further.
+**Codex's VS Code variant is recovered from the editor, not the log.** Codex only ever
+writes `vscode`, so Insiders work is indistinguishable from stable in the rollout itself.
+But each editor's `globalStorage/state.vscdb` carries the Codex extension's per-thread UI
+state under `openai.chatgpt`; a thread id appearing there means that editor opened it.
+`_vscode_thread_owners()` builds {thread id → editor} across all known editors (60s TTL)
+and `_ide_of` uses it. A thread present in TWO editors is genuinely ambiguous and is left
+as plain "VS Code" rather than guessed — here that's 6 of 45.
+
+**Still unrecoverable:** Claude Code. Its `Anthropic.claude-code` state holds only
+settings and `hiddenSessionIds`, never a session list, and there is no per-editor
+workspaceStorage for it — so `claude-vscode` stays "VS Code" whatever fork hosted it.
+Same for any extension run inside Cursor/Windsurf/Antigravity that logs only "vscode".
 
 Adding a VS Code fork is one entry in `COPILOT_ROOTS` + `EDITOR_LABEL`; the chat storage
 format is identical across forks. Note newer builds nest sessions as
