@@ -77,25 +77,50 @@ function areaDS(label, data, color, fill){
     fill:fill===undefined?true:fill, stack:"a"};
 }
 /* value labels at the bar ends — small horizontal bar lists are unreadable
-   without them once one series dwarfs the rest */
+    without them once one series dwarfs the rest. Also labels the top of vertical
+    stacked bars so daily totals are readable without hovering. */
 const barLabels = {
   id:"barLabels",
   afterDatasetsDraw(c, a, o){
-    const {ctx}=c, meta=c.getDatasetMeta(0);
+    const {ctx}=c;
+    const isHorizontal = c.config.options?.indexAxis === "y";
     ctx.save();
     ctx.font="600 10.5px "+getComputedStyle(document.body).fontFamily;
     ctx.textBaseline="middle";
     const inkOut=cssv("--text-2"), inkIn=cssv("--surface");
-    meta.data.forEach((bar,i)=>{
-      const v=c.data.datasets[0].data[i];
-      if(v==null) return;
-      const txt=(o.fmt||fmtTok)(v);
-      const pad=6;
-      const fits = bar.x + pad + ctx.measureText(txt).width < c.chartArea.right;
-      ctx.textAlign = fits ? "left" : "right";
-      ctx.fillStyle = fits ? inkOut : inkIn;   // inside a bar, use the surface ink
-      ctx.fillText(txt, fits ? bar.x+pad : bar.x-pad, bar.y);
-    });
+    if(isHorizontal){
+      const meta=c.getDatasetMeta(0);
+      meta.data.forEach((bar,i)=>{
+        const v=c.data.datasets[0].data[i];
+        if(v==null) return;
+        const txt=(o.fmt||fmtTok)(v);
+        const pad=6;
+        const fits = bar.x + pad + ctx.measureText(txt).width < c.chartArea.right;
+        ctx.textAlign = fits ? "left" : "right";
+        ctx.fillStyle = fits ? inkOut : inkIn;   // inside a bar, use the surface ink
+        ctx.fillText(txt, fits ? bar.x+pad : bar.x-pad, bar.y);
+      });
+    } else {
+      // vertical stacked bars: show the stack total above the top segment
+      const datasets=c.data.datasets, labels=c.data.labels||[];
+      for(let i=0;i<labels.length;i++){
+        let total=0, topY=null, topX=null, visible=false;
+        for(let di=0; di<datasets.length; di++){
+          const meta=c.getDatasetMeta(di);
+          const bar=meta.data[i];
+          if(!bar || bar.skip) continue;
+          total += datasets[di].data[i] || 0;
+          topX = bar.x;
+          topY = bar.y;   // stacked segments ascend; last one is highest
+          visible = true;
+        }
+        if(!visible || total===0) continue;
+        const txt=(o.fmt||fmtTok)(total);
+        ctx.textAlign="center";
+        ctx.fillStyle=inkOut;
+        ctx.fillText(txt, topX, topY-6);
+      }
+    }
     ctx.restore();
   }
 };

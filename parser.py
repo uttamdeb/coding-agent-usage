@@ -1310,6 +1310,7 @@ def parse_opencode_db(agg, db_path):
 
     sessions_meta = {}
     sess = {}          # sid -> running totals
+    sess_days = {}     # sid -> {date -> per-day token/cost breakdown}
     model_tokens = {}
     try:
         con = _open_ro_sqlite(db_path)
@@ -1406,9 +1407,14 @@ def parse_opencode_db(agg, db_path):
                         _set_title(agg, text)
                         meta["_weak_title_set"] = True
                 s = sess.setdefault(sid, _blank_opencode_session())
+                sd = sess_days.setdefault(sid, {})
+                day = sd.setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                              "asst": 0, "user": 0, "tools": 0,
+                                              "prem": 0.0, "cost": 0.0})
                 if "end" not in s or dt.isoformat() > s["end"]:
                     s["end"] = dt.isoformat()
                 s["user"] += 1
+                day["user"] += 1
                 continue
 
             if role != "assistant":
@@ -1459,6 +1465,10 @@ def parse_opencode_db(agg, db_path):
                 T["side"] = T.get("side", 0) + inp + out + cr + cw
 
             s = sess.setdefault(sid, _blank_opencode_session())
+            sd = sess_days.setdefault(sid, {})
+            day = sd.setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
+                                        "asst": 0, "user": 0, "tools": 0,
+                                        "prem": 0.0, "cost": 0.0})
             iso = dt.isoformat()
             if "start" not in s or iso < s["start"]:
                 s["start"] = iso
@@ -1469,6 +1479,10 @@ def parse_opencode_db(agg, db_path):
             s["asst"] += 1
             s["tools"] += ntools
             s["cost"] += cost
+            day["in"] += inp; day["out"] += out; day["cr"] += cr; day["cc"] += cw
+            day["asst"] += 1
+            day["tools"] += ntools
+            day["cost"] += cost
 
         # ---- build per-session summaries ----------------------------------
         out = []
@@ -1483,7 +1497,7 @@ def parse_opencode_db(agg, db_path):
             start_dt = _from_ms_or_s(meta.get("start"))
             end_dt = _from_ms_or_s(meta.get("end"))
             out.append({
-                "id": (sid or "")[:8],
+                "id": sid or "",
                 "source": "opencode", "ide": _ide_of("opencode", agg),
                 "editor": "opencode",
                 "title": title,
@@ -1496,6 +1510,7 @@ def parse_opencode_db(agg, db_path):
                 "asst": s["asst"], "user": s["user"], "req": 0,
                 "prem": 0.0, "tools": s["tools"], "side": 0,
                 "cost": s["cost"],
+                "days": sess_days.get(sid, {}),
                 "cliver": meta.get("version"),
                 "mode": agent,
             })

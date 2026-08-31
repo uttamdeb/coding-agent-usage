@@ -138,7 +138,9 @@ format is identical across forks. Note newer builds nest sessions as
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
   Because one DB holds many projects, the parser also emits `project_records` keyed by
   `project\tdate\tmodel`; dashboard.py uses them so tokens are attributed to the project
-  that produced them instead of the file's dominant project.
+  that produced them instead of the file's dominant project. It also builds a `days` map per
+  session so the Sessions table can clip a session to the selected date range without all
+  sessions inheriting the file-wide daily totals.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
 - **Hermes Agent** (`~/.hermes/state.db`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes`): one

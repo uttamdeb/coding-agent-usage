@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 33
+CACHE_VERSION = 34
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -261,11 +261,17 @@ def build_payload():
         for s in agg.get("sessions", []):
             s2 = dict(s)
             own = s.get("days")
-            if own:                       # Cursor: price its own per-day split
+            if own:                       # Cursor/opencode supplied per-day splits
                 days = {}
                 for date, v in own.items():
-                    days[date] = dict(v, cost=_cost(source, s["model"], v["in"], v["out"],
-                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date))
+                    # opencode's DB logs a real per-message cost, so the parser's
+                    # per-day cost is already authoritative. Cursor supplies no cost,
+                    # so price the day's tokens at the session's dominant model.
+                    logged = v.get("cost", 0.0) if has_logged_cost else None
+                    day_cost = (logged if logged else
+                                _cost(source, s["model"], v["in"], v["out"],
+                                      v.get("cr", 0), 0, 0, v.get("cc", 0), date))
+                    days[date] = dict(v, cost=day_cost)
             else:
                 days = file_days
             s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],

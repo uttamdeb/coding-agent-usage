@@ -178,9 +178,11 @@ function renderDaily(d){
     legendHTML("dailyChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
   document.getElementById("dailyHint").textContent =
     `${S.metric==="cost"?"est. cost":S.metric==="messages"?"assistant messages":"tokens"} per day, stacked by tool`;
-  mk("dailyChart",{type:"bar",data:{labels:days.map(shortDay),datasets:ds},
-    options:{scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmt(v)}}}),
-      plugins:{tooltip:{callbacks:{
+  mk("dailyChart",{type:"bar",plugins:[barLabels],
+    data:{labels:days.map(shortDay),datasets:ds},
+    options:{layout:{padding:{top:18}},
+      scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmt(v)}}}),
+      plugins:{barLabels:{fmt},tooltip:{callbacks:{
         label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y),
         footer:it=>"total "+fmt(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
 }
@@ -369,9 +371,11 @@ function viewCost(d){
     const m={}; for(const r of d.recs) if(r.source===s) m[r.date]=(m[r.date]||0)+(r.cost||0);
     return stackDS(SRC[s].label, days2.map(x=>+(m[x]||0).toFixed(3)), srcColor(s));
   });
-  mk("dailyCost",{type:"bar",data:{labels:days2.map(shortDay),datasets:dsc},
-    options:{scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSD(v)}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y),
+  mk("dailyCost",{type:"bar",plugins:[barLabels],
+    data:{labels:days2.map(shortDay),datasets:dsc},
+    options:{layout:{padding:{top:18}},
+      scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSD(v)}}}),
+      plugins:{barLabels:{fmt:fmtUSD2},tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y),
         footer:it=>"total "+fmtUSD2(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
 }
 
