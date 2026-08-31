@@ -65,6 +65,11 @@ Copilot's comes from *which editor's storage* the file sat in, Claude/Codex stam
 place. An unrecognised entrypoint passes through **as itself** rather than being forced
 into a bucket, so a new host appears rather than silently becoming "VS Code".
 
+**opencode inside VS Code terminal:** opencode itself does not log which terminal
+launched it, so it is normally labelled "CLI". When the dashboard is started from a
+shell whose `TERM_PROGRAM=vscode`, opencode sessions are labelled "VS Code" as a
+best-effort signal that the host terminal is the VS Code integrated terminal.
+
 **Codex's VS Code variant is recovered from the editor, not the log.** Codex only ever
 writes `vscode`, so Insiders work is indistinguishable from stable in the rollout itself.
 But each editor's `globalStorage/state.vscdb` carries the Codex extension's per-thread UI

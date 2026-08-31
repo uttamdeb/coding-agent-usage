@@ -1458,7 +1458,7 @@ def parse_opencode_db(agg, db_path):
             end_dt = _from_ms_or_s(meta.get("end"))
             out.append({
                 "id": (sid or "")[:8],
-                "source": "opencode", "ide": IDE_FIXED["opencode"],
+                "source": "opencode", "ide": _ide_of("opencode", agg),
                 "editor": "opencode",
                 "title": title,
                 "project": _leaf(directory) or directory or "opencode",
@@ -1968,6 +1968,12 @@ def _ide_of(source, agg, editor_hint=None):
     entrypoint is passed through as-is rather than being forced into a bucket, so a
     new host shows up as itself instead of silently becoming 'VS Code'."""
     if source in IDE_FIXED:
+        # opencode is a terminal tool; when the dashboard itself is running inside
+        # the VS Code integrated terminal, opencode sessions almost certainly are
+        # too. Use that as a best-effort host signal since opencode's logs do not
+        # record which terminal launched them.
+        if source == "opencode" and os.environ.get("TERM_PROGRAM") == "vscode":
+            return "VS Code"
         return IDE_FIXED[source]
     if source == "copilot":
         # the editor whose storage this file came out of
