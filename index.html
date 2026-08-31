@@ -61,6 +61,10 @@
         <button class="btn" data-dd="toggle"><span id="provLabel">All providers</span> ▾</button>
         <div class="dd-panel" id="provPanel"></div>
       </div>
+      <div class="dd" id="ddIde">
+        <button class="btn" data-dd="toggle"><span id="ideLabel">All IDEs</span> ▾</button>
+        <div class="dd-panel" id="idePanel"></div>
+      </div>
       <div class="dd" id="ddProj">
         <button class="btn" data-dd="toggle"><span id="projLabel">All projects</span> ▾</button>
         <div class="dd-panel" id="projPanel"></div>
@@ -217,6 +221,17 @@
         <div class="card col-12">
           <div class="head"><div><h3>Agent behaviour</h3><div class="hint">how much machinery each of your prompts sets off</div></div></div>
           <div class="stat-row" id="agentStats"></div>
+        </div>
+        <div class="card col-12">
+          <div class="head">
+            <div><h3>Where you work</h3><div class="hint" id="ideHint">which IDE / surface each tool ran in</div></div>
+            <div class="seg" id="ideMetricSeg">
+              <button data-m="tokens" class="on">Tokens</button>
+              <button data-m="cost">Cost</button>
+              <button data-m="messages">Msgs</button>
+            </div>
+          </div>
+          <div id="ideMatrix" class="tbl-wrap"></div>
         </div>
         <div class="card col-7">
           <div class="head"><div><h3>Top tool calls</h3><div class="hint">function / tool invocations, coloured by the tool that called them</div></div></div>

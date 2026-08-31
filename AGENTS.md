@@ -55,6 +55,24 @@ Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
     Re-run the data-viz skill's `validate_palette.js` over the whole sequence after any
     reorder or hue change. Identity must never be colour-alone: keep legends and tooltips.
 
+## The IDE dimension
+
+`records` carry an `ide` — which editor/surface the work ran in — resolved once per
+aggregate by `_ide_of()` and filterable like project or model. Each source records it
+differently and none agree on spelling, so they collapse to a shared vocabulary:
+Copilot's comes from *which editor's storage* the file sat in, Claude/Codex stamp an
+`entrypoint`/`originator`, and Cursor/Claude Desktop/opencode/Hermes run in exactly one
+place. An unrecognised entrypoint passes through **as itself** rather than being forced
+into a bucket, so a new host appears rather than silently becoming "VS Code".
+
+**Known limit:** `claude-vscode` and `codex_vscode` name the VS Code *extension*, not
+the fork hosting it. Run either inside Cursor, Windsurf or Antigravity and the log still
+says vscode — the host genuinely isn't recorded, so it cannot be split further.
+
+Adding a VS Code fork is one entry in `COPILOT_ROOTS` + `EDITOR_LABEL`; the chat storage
+format is identical across forks. Note newer builds nest sessions as
+`chatSessions/<uuid>/index.json` instead of a flat file — both globs are needed.
+
 ## Per-source quirks
 
 - **Codex has (at least) two incompatible rollout schemas.** Older/stable CLIs emit

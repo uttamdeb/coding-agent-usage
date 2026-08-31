@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 30
+CACHE_VERSION = 31
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -148,6 +148,10 @@ def build_payload():
         has_logged_cost = (source == "opencode"
                            and str(agg.get("path", "")).endswith(".db"))
         project = agg.get("project") or "(unknown)"
+        # One IDE per file for every source (Copilot's is the editor whose storage
+        # it came from; Claude/Codex stamp an entrypoint; the rest run in exactly
+        # one place), so it is resolved here rather than per record.
+        ide = P._ide_of(source, agg)
         file_tokens = 0
         file_msgs = 0
         file_cost = 0.0
@@ -155,11 +159,11 @@ def build_payload():
             date, model = key.split("\t", 1)
             if model == "(user)":
                 # only carries user-turn counts
-                rk = (date, source, "(user)", project)
+                rk = (date, source, "(user)", project, ide)
                 slot = records.setdefault(rk, _zero())
                 slot["user"] += r.get("user", 0)
                 continue
-            rk = (date, source, model, project)
+            rk = (date, source, model, project, ide)
             slot = records.setdefault(rk, _zero())
             for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools"):
                 slot[f] += r.get(f, 0)
@@ -256,9 +260,9 @@ def build_payload():
             sessions.append(s2)
 
     rec_list = []
-    for (date, source, model, project), v in records.items():
+    for (date, source, model, project, ide), v in records.items():
         rec_list.append({"date": date, "source": source, "model": model,
-                         "project": project, **v})
+                         "project": project, "ide": ide, **v})
     rec_list.sort(key=lambda x: (x["date"], x["source"]))
 
     # keep the payload bounded: the long tail of one-off tool names folds into

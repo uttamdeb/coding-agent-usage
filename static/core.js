@@ -82,9 +82,10 @@ const S = {
   provs:new Set(),      // empty = all
   projs:new Set(),
   models:new Set(),
+  ides:new Set(),        // which IDE / surface the work ran in
   search:"",
   exactOnly:false,
-  metric:"tokens", projMetric:"tokens", provMetric:"cost", rateMetric:"all",
+  metric:"tokens", projMetric:"tokens", provMetric:"cost", rateMetric:"all", ideMetric:"tokens",
   live:true,
   muted:{},             // chartId -> Set of muted series labels
   sessSort:{key:"end",dir:-1}, modelSort:{key:"cost",dir:-1},
@@ -149,15 +150,16 @@ function passModel(m){
   return true;
 }
 function passProj(p){ return !S.projs.size || S.projs.has(p||"(unknown)"); }
+function passIde(i){ return !S.ides.size || S.ides.has(i||"(unknown)"); }
 
 function slice(r){
   r = r || range();
   const recs = RAW.records.filter(x => passSrc(x.source) && passModel(x.model)
-      && passProj(x.project) && x.date>=r.from && x.date<=r.to);
+      && passProj(x.project) && passIde(x.ide) && x.date>=r.from && x.date<=r.to);
   const hourly = RAW.hourly.filter(x => passSrc(x.source) && x.date>=r.from && x.date<=r.to);
   const sessions = RAW.sessions
     .filter(x => passSrc(x.source) && passProj(x.project) && passModel(x.model)
-                 && activeInRange(x, r))
+                 && passIde(x.ide) && activeInRange(x, r))
     .map(x => clipSession(x, r));
   return {recs, hourly, sessions, r};
 }

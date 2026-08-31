@@ -108,7 +108,9 @@ spend runs inside subagents. Nothing is shown unless your data supports it.
 
 **Storage** — see below.
 
-**Filters** — flexible date range (14 presets incl. this week / month / quarter / year, plus a
+**Filters** — an **IDE / surface** filter (VS Code, Insiders, Cursor, Codex Desktop,
+Claude Desktop, CLI…) alongside tool, provider, project and model, plus a *Where you work*
+matrix on Tools & Agents · flexible date range (14 presets incl. this week / month / quarter / year, plus a
 custom start–end picker), **compare vs. previous period**, multi-select dropdowns for tool,
 provider, project and model, search, and an "exact tokens only" toggle that drops the sources
 whose token counts are estimated. Filter state shows as removable pills.

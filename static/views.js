@@ -46,6 +46,7 @@ function multiPanel(panelId, labelId, items, set, allLabel, isTools){
 function buildFilterPanels(){
   const r = range();
   const tokBySrc = {}, tokByProv = {}, tokByProj = {}, tokByModel = {};
+  const tokByIde = {};
   for(const x of RAW.records){
     if(x.date<r.from||x.date>r.to) continue;
     const t = recTokens(x);
@@ -55,7 +56,12 @@ function buildFilterPanels(){
       tokByModel[x.model]=(tokByModel[x.model]||0)+t;
     }
     tokByProj[x.project||"(unknown)"]=(tokByProj[x.project||"(unknown)"]||0)+t;
+    tokByIde[x.ide||"(unknown)"]=(tokByIde[x.ide||"(unknown)"]||0)+t;
   }
+  multiPanel("idePanel","ideLabel",
+    Object.entries(tokByIde).sort((a,b)=>b[1]-a[1])
+      .map(([k,v])=>({key:k,label:k,value:fmtTok(v)})),
+    S.ides, "All IDEs");
   multiPanel("toolsPanel","toolsLabel",
     ORDER.map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
     S.tools, "All tools", true);
@@ -79,6 +85,7 @@ function renderPills(){
   S.provs.forEach(p=>out.push(["prov:"+p, p]));
   S.projs.forEach(p=>out.push(["proj:"+p, p]));
   S.models.forEach(m=>out.push(["model:"+m, m]));
+  S.ides.forEach(i=>out.push(["ide:"+i, i]));
   if(S.exactOnly) out.push(["exact","exact tokens only"]);
   if(S.search) out.push(["search",`“${S.search}”`]);
   if(S.compare) out.push(["cmp","comparing to previous period"]);
@@ -503,6 +510,38 @@ function categorize(name){
   return "Other";
 }
 function viewTools(d){
+
+  // ---- IDE x tool matrix ------------------------------------------------
+  // The IDE is a real dimension now, so show it rather than only offering it as
+  // a filter. Copilot's is derived from which editor's storage the log came from;
+  // Claude/Codex stamp an entrypoint. Rows are IDEs, columns the tools run in them.
+  {
+    const val = metricOf(S.ideMetric), fmt = fmtOf(S.ideMetric);
+    const byIde = {}, ideTot = {}, srcTot = {};
+    for(const r of d.recs){
+      const i = r.ide || "(unknown)", v = val(r);
+      if(!v) continue;
+      (byIde[i] = byIde[i] || {})[r.source] = (byIde[i][r.source] || 0) + v;
+      ideTot[i] = (ideTot[i] || 0) + v;
+      srcTot[r.source] = (srcTot[r.source] || 0) + v;
+    }
+    const ides = Object.keys(ideTot).sort((a,b)=>ideTot[b]-ideTot[a]);
+    const srcs = ORDER.filter(x => srcTot[x]);
+    const grand = ides.reduce((a,i)=>a+ideTot[i],0) || 1;
+    let h = `<table><thead><tr><th>IDE / surface</th>${
+      srcs.map(x=>`<th class="r">${SRC[x].label}</th>`).join("")
+    }<th class="r">Total</th><th class="r">Share</th></tr></thead><tbody>`;
+    for(const i of ides){
+      h += `<tr><td>${esc(i)}</td>` + srcs.map(x =>
+        `<td class="num r">${byIde[i][x] ? fmt(byIde[i][x]) : '<span class="dim">—</span>'}</td>`
+      ).join("") + `<td class="num r"><strong>${fmt(ideTot[i])}</strong></td>`
+        + `<td class="num r dim">${fmtPct(ideTot[i]/grand)}</td></tr>`;
+    }
+    document.getElementById("ideMatrix").innerHTML = h + "</tbody></table>";
+    document.getElementById("ideHint").textContent = ides.length > 1
+      ? `${ides.length} surfaces in range · a VS Code extension logs "VS Code" whatever fork hosts it`
+      : "which IDE / surface each tool ran in";
+  }
   const tools = toolCounts(d.r);
   const t = totals(d.recs);
   const totalCalls = tools.reduce((a,x)=>a+x.count,0);
@@ -1084,6 +1123,7 @@ function wireMulti(panelId, get, isTools){
 wireMulti("toolsPanel",()=>S.tools,true);
 wireMulti("provPanel",()=>S.provs,false);
 wireMulti("projPanel",()=>S.projs,false);
+wireMulti("idePanel",()=>S.ides,false);
 wireMulti("modelPanel",()=>S.models,false);
 
 document.getElementById("pills").addEventListener("click",e=>{
@@ -1102,6 +1142,7 @@ document.getElementById("pills").addEventListener("click",e=>{
     document.querySelectorAll("#cmpSeg button").forEach((x,i)=>x.classList.toggle("on",i===0)); }
   else if(k.startsWith("prov:")) S.provs.delete(k.slice(5));
   else if(k.startsWith("proj:")) S.projs.delete(k.slice(5));
+  else if(k.startsWith("ide:")) S.ides.delete(k.slice(4));
   else if(k.startsWith("model:")) S.models.delete(k.slice(6));
   renderAll();
 });
@@ -1125,12 +1166,13 @@ document.getElementById("liveBtn").addEventListener("click",e=>{
   document.getElementById("livedot").classList.toggle("off",!S.live);
 });
 document.addEventListener("click",e=>{
-  const seg=e.target.closest("#metricSeg button,#projMetricSeg button,#provMetricSeg button,#rateSeg button");
+  const seg=e.target.closest("#metricSeg button,#projMetricSeg button,#provMetricSeg button,#rateSeg button,#ideMetricSeg button");
   if(seg){ const p=seg.parentElement;
     if(p.id==="metricSeg") S.metric=seg.dataset.m;
     if(p.id==="projMetricSeg") S.projMetric=seg.dataset.m;
     if(p.id==="provMetricSeg") S.provMetric=seg.dataset.m;
     if(p.id==="rateSeg") S.rateMetric=seg.dataset.m;
+    if(p.id==="ideMetricSeg") S.ideMetric=seg.dataset.m;
     [...p.children].forEach(x=>x.classList.toggle("on",x===seg)); renderAll(); return; }
   const lg=e.target.closest(".li[data-lg]");
   if(lg){ const id=lg.dataset.lg, k=lg.dataset.k;

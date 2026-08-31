@@ -79,7 +79,16 @@ def _editor_roots(names):
     return out
 
 
-COPILOT_ROOTS = _editor_roots(["Code", "Code - Insiders", "VSCodium", "Cursor"])
+# VS Code forks that ship Copilot Chat and therefore write the same chatSessions
+# store. Adding a fork here is all it takes to cover it — the on-disk format is
+# identical because they all inherit VS Code's chat storage. Verified present on
+# this machine: Code, Code - Insiders, Cursor, Puku. The rest are included because
+# they are the same shape and cost nothing when absent (glob on a missing dir is
+# simply empty), NOT because they were tested here.
+COPILOT_ROOTS = _editor_roots([
+    "Code", "Code - Insiders", "VSCodium", "Cursor", "Puku",
+    "Windsurf", "Trae", "Positron",
+])
 CURSOR_DBS = [os.path.join(r, "User", "globalStorage", "state.vscdb")
               for r in _editor_roots(["Cursor"])]
 
@@ -124,6 +133,10 @@ EDITOR_LABEL = {
     "Code - Insiders": "VS Code Insiders",
     "VSCodium": "VSCodium",
     "Cursor": "Cursor",
+    "Puku": "Puku",
+    "Windsurf": "Windsurf",
+    "Trae": "Trae",
+    "Positron": "Positron",
 }
 
 # ---------------------------------------------------------------------------
@@ -1112,7 +1125,7 @@ def parse_cursor(agg, db_path):
         c = comp.get(cid, {})
         mode = {1: "chat", 2: "agent"}.get(c.get("mode"), c.get("mode"))
         out.append({
-            "id": (cid or "")[:8], "source": "cursor", "editor": "Cursor",
+            "id": (cid or "")[:8], "source": "cursor", "ide": IDE_FIXED["cursor"], "editor": "Cursor",
             "title": c.get("name"),   # Cursor stores the current name
             "project": _top(s["proj"]) or "Cursor",
             "model": _normalize_cursor_model(c.get("model")),
@@ -1434,7 +1447,7 @@ def parse_opencode_db(agg, db_path):
             end_dt = _from_ms_or_s(meta.get("end"))
             out.append({
                 "id": (sid or "")[:8],
-                "source": "opencode",
+                "source": "opencode", "ide": IDE_FIXED["opencode"],
                 "editor": "opencode",
                 "title": title,
                 "project": _leaf(directory) or directory or "opencode",
@@ -1597,7 +1610,7 @@ def parse_hermes(agg, db_path):
         start = _from_ms_or_s(s["started"])
         end = _from_ms_or_s(s["ended"]) or start
         out.append({
-            "id": (sid or "")[:8], "source": "hermes", "editor": "Hermes Agent",
+            "id": (sid or "")[:8], "source": "hermes", "ide": IDE_FIXED["hermes"], "editor": "Hermes Agent",
             "title": s.get("title"), "project": _leaf(s["cwd"]) or s["cwd"] or "(unknown)",
             "model": dom, "models": models[:6], "nmodels": len(mt),
             "branch": s.get("branch"), "entry": s.get("channel"),
@@ -1723,6 +1736,11 @@ def discover():
             os.path.join(root, "User", "workspaceStorage", "*", "chatSessions", "*.jsonl"),
             os.path.join(root, "User", "globalStorage", "emptyWindowChatSessions", "*.json"),
             os.path.join(root, "User", "globalStorage", "emptyWindowChatSessions", "*.jsonl"),
+            # Newer builds nest each session in its own directory as
+            # chatSessions/<uuid>/index.json instead of a flat file. Seen on Puku;
+            # the flat globs above miss it entirely because it is one level deeper.
+            os.path.join(root, "User", "workspaceStorage", "*", "chatSessions", "*", "index.json"),
+            os.path.join(root, "User", "globalStorage", "emptyWindowChatSessions", "*", "index.json"),
         ]
         for pat in pats:
             for p in glob.glob(pat):
@@ -1853,6 +1871,59 @@ def update_file(agg, source, path, editor_hint, proj_map):
     return agg
 
 
+# ---------------------------------------------------------------------------
+# Which IDE / surface a session actually ran in.
+#
+# Every source records this differently and none of them agree on spelling:
+#   Copilot  — implicit in WHICH editor's storage the file came from ("Code")
+#   Claude   — an `entrypoint` field on each record ("claude-vscode", "cli")
+#   Codex    — an `originator` in session_meta ("codex_vscode", "Codex Desktop")
+#   Cursor / Claude Desktop / opencode / Hermes — one surface by definition
+# so they are collapsed to a shared vocabulary before anything groups by them.
+#
+# CAVEAT worth keeping in mind: "claude-vscode" and "codex_vscode" name the VS Code
+# *extension*, not the fork hosting it. Run either inside Cursor, Windsurf or
+# Antigravity and the log still says vscode — the host is genuinely not recorded, so
+# those land under "VS Code" and cannot be split further from the log alone.
+# ---------------------------------------------------------------------------
+IDE_FROM_ENTRY = {
+    "claude-vscode": "VS Code",
+    "codex_vscode": "VS Code",
+    "vscode": "VS Code",
+    "cli": "CLI",
+    "codex_cli": "CLI",
+    "codex_exec": "CLI",
+    "codex desktop": "Codex Desktop",
+    "codex_desktop": "Codex Desktop",
+    "codex_work_desktop": "Codex Desktop",
+    "local-agent": "Claude Desktop",
+}
+
+# Sources that only ever run in one place — no per-record signal needed.
+IDE_FIXED = {
+    "cursor": "Cursor",
+    "claude-desktop": "Claude Desktop",
+    "opencode": "CLI",
+    "hermes": "CLI",
+    "gemini": "CLI",
+}
+
+
+def _ide_of(source, agg, editor_hint=None):
+    """Normalised IDE/surface for one aggregate. Never guesses: an unrecognised
+    entrypoint is passed through as-is rather than being forced into a bucket, so a
+    new host shows up as itself instead of silently becoming 'VS Code'."""
+    if source in IDE_FIXED:
+        return IDE_FIXED[source]
+    if source == "copilot":
+        # the editor whose storage this file came out of
+        return agg.get("editor") or editor_hint or "VS Code"
+    entry = (agg.get("entry") or "").strip()
+    if entry:
+        return IDE_FROM_ENTRY.get(entry.lower(), entry)
+    return "CLI"
+
+
 def _finalize_session(agg, source, path):
     """Roll the file's totals into a single session summary."""
     T = agg["totals"]
@@ -1903,5 +1974,6 @@ def _finalize_session(agg, source, path):
         # "started" markers this Codex session's own file recorded. 0 for anyone
         # who didn't spawn any, so it renders identically to Cursor's absence case.
         "subagents": agg.get("_spawned", 0),
+        "ide": _ide_of(source, agg),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
     }]
