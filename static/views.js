@@ -108,8 +108,11 @@ function renderKPIs(d){
     s.tok+=recTokens(r); s.cost+=r.cost||0; s.msgs+=r.asst||0; s.user+=r.user||0; }
   const series = f => days.map(x=>(byDay[x]||{})[f]||0);
   const bySrc = {};
-  for(const r of d.recs){ const s=bySrc[r.source]||(bySrc[r.source]={tok:0,cost:0,msgs:0});
-    s.tok+=recTokens(r); s.cost+=r.cost||0; s.msgs+=r.asst||0; }
+  for(const r of d.recs){ const s=bySrc[r.source]||(bySrc[r.source]={tok:0,cost:0,msgs:0,user:0});
+    s.tok+=recTokens(r); s.cost+=r.cost||0; s.msgs+=r.asst||0;
+      // summed across BOTH conventions on purpose: Claude/Codex record prompts on a
+      // "(user)" marker row, Copilot/Cursor on the model row. Neither writes both.
+      s.user+=r.user||0; }
   const split = f => ORDER.filter(s=>bySrc[s]&&bySrc[s][f])
     .map(s=>`<span style="color:${srcColor(s)}">${f==="cost"?fmtUSD(bySrc[s][f]):fmtTok(bySrc[s][f])}</span>`)
     .join("");
@@ -118,7 +121,8 @@ function renderKPIs(d){
     {lab:"Tokens", val:fmtTok(t.tok), spark:series("tok"), prev:prev&&prev.tok, cur:t.tok, split:split("tok")},
     {lab:"Est. cost", val:fmtUSD(t.cost), spark:series("cost"), prev:prev&&prev.cost, cur:t.cost,
      split:split("cost"), invert:true},
-    {lab:"Your prompts", val:fmtNum(t.user), spark:series("user"), prev:prev&&prev.user, cur:t.user},
+    {lab:"Your prompts", val:fmtNum(t.user), spark:series("user"), prev:prev&&prev.user,
+     cur:t.user, split:split("user")},
     {lab:"Assistant msgs", val:fmtNum(t.msgs), spark:series("msgs"), prev:prev&&prev.msgs, cur:t.msgs, split:split("msgs")},
     {lab:"Sessions", val:fmtNum(d.sessions.length), prev:prevSess, cur:d.sessions.length},
     {lab:"Active days", val:fmtNum(t.days.size)+` <span class="dim" style="font-size:13px;font-weight:500">/ ${days.length}</span>`,
