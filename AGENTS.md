@@ -82,6 +82,24 @@ Adding a VS Code fork is one entry in `COPILOT_ROOTS` + `EDITOR_LABEL`; the chat
 format is identical across forks. Note newer builds nest sessions as
 `chatSessions/<uuid>/index.json` instead of a flat file — both globs are needed.
 
+## Field conventions that differ by source (do not "fix" these)
+
+- **User turns** land in two different places: Claude/Claude Desktop/Codex write them
+  to a `(user)` marker row in `records`; Copilot/Cursor write them onto the model row.
+  Neither writes both, so summing `r.user` across all records is correct — but a check
+  that assumes one convention will report a phantom bug.
+- **`reason` is a SUBSET of `out`, never additive** — Claude's
+  `usage.output_tokens_details.thinking_tokens` and Codex's `reasoning_output_tokens`
+  are both already inside `output_tokens`. The UI shows it as "of which reasoning"
+  without stacking; anything that adds it to a token total is double-counting.
+- **`cc5 + cc1` can disagree with `cc` by a few hundred tokens.** Anthropic itself
+  occasionally logs `cache_creation_input_tokens: 0` alongside a non-zero
+  `cache_creation.ephemeral_1h_input_tokens`. Both are recorded as-is; cost uses the
+  tiered fields. Seen once in 813 rows, worth ~$0.003 — upstream, not ours.
+- **`side` vs `subagents`**: Claude folds subagent tokens into the parent's stream
+  (`side`); Codex spawns wholly separate sessions and only the parent's spawn COUNT
+  (`subagents`) is knowable. Check both when asking "did this session delegate".
+
 ## Per-source quirks
 
 - **Codex has (at least) two incompatible rollout schemas.** Older/stable CLIs emit

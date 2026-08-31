@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 31
+CACHE_VERSION = 32
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -285,7 +285,11 @@ def build_payload():
     hour_list = [{"date": d, "hour": h, "source": s, **v}
                  for (d, h, s), v in hourly.items()]
 
-    sessions = [s for s in sessions if (s.get("asst") or s.get("req") or s.get("in"))]
+    # A session where you typed but never got a reply is still something that
+    # happened — `records` counts those user turns, so dropping the session here
+    # made the two paths disagree (1,982 prompts vs 1,980).
+    sessions = [s for s in sessions
+                if (s.get("asst") or s.get("req") or s.get("in") or s.get("user"))]
     sessions.sort(key=lambda s: (s.get("end") or ""), reverse=True)
 
     return {

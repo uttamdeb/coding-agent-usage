@@ -509,6 +509,12 @@ def parse_claude(agg, lines):
             out = int(u.get("output_tokens", 0) or 0)
             cr = int(u.get("cache_read_input_tokens", 0) or 0)
             cc = int(u.get("cache_creation_input_tokens", 0) or 0)
+            # Thinking tokens are a SUBSET of output_tokens (never additive) — the
+            # same convention Codex's reasoning_output_tokens uses, and what the UI
+            # assumes when it shows "of which reasoning" without stacking it.
+            # Without this Claude's extended thinking is invisible: the token
+            # composition card and the Optimize "thinking" finding only ever saw Codex.
+            reason = int((u.get("output_tokens_details") or {}).get("thinking_tokens", 0) or 0)
             ccd = u.get("cache_creation") or {}
             cc5 = int(ccd.get("ephemeral_5m_input_tokens", 0) or 0)
             cc1 = int(ccd.get("ephemeral_1h_input_tokens", 0) or 0)
@@ -518,6 +524,7 @@ def parse_claude(agg, lines):
                 r = _rec(agg, _buckets(dt)[0], model)
                 r["in"] += inp; r["out"] += out; r["cr"] += cr; r["cc"] += cc
                 r["cc5"] += cc5; r["cc1"] += cc1
+                r["reason"] += reason
                 r["asst"] += 1
                 # count tool_use blocks
                 tools = 0
@@ -550,6 +557,7 @@ def parse_claude(agg, lines):
                 ce["tok"] += tok; ce["n"] += 1
                 T = agg["totals"]
                 T["in"] += inp; T["out"] += out; T["cr"] += cr; T["cc"] += cc
+                T["reason"] += reason
                 T["cc5"] += cc5; T["cc1"] += cc1
                 T["asst"] += 1
                 if side:                      # spawned subagent, not the main loop
