@@ -1343,6 +1343,22 @@ def parse_opencode_db(agg, db_path):
             proj_tally[p] = proj_tally.get(p, 0) + 1
         agg["project"] = max(proj_tally, key=proj_tally.get) if proj_tally else "opencode"
 
+        # opencode's DB contains many sessions across many projects. Records are
+        # keyed by date+model, so a single aggregate would otherwise force every
+        # token into the single dominant project. Track a parallel set of records
+        # keyed by project so the dashboard can attribute each day's tokens to the
+        # project that actually produced them.
+        agg["project_records"] = {}
+        def _rec_proj(project, date, model):
+            key = f"{project}\t{date}\t{model}"
+            r = agg["project_records"].get(key)
+            if r is None:
+                r = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
+                     "reason": 0, "asst": 0, "user": 0, "req": 0, "prem": 0.0,
+                     "tools": 0, "cost": 0.0}
+                agg["project_records"][key] = r
+            return r
+
         # ---- tool parts (batch) --------------------------------------------
         # tool rows in part have {"type":"tool", "tool":"<name>", ...}
         tools_by_msg = {}
@@ -1369,9 +1385,12 @@ def parse_opencode_db(agg, db_path):
                 continue
             date = _buckets(dt)[0]
 
+            project = (_leaf(meta["directory"]) if meta and meta.get("directory") else None) or "opencode"
             if role == "user":
                 r = _rec(agg, date, "(user)")
                 r["user"] += 1
+                rp = _rec_proj(project, date, "(user)")
+                rp["user"] += 1
                 agg["totals"]["user"] += 1
                 _bump_time(agg, dt, 0, 0)
                 # weak title from first user prompt of the session
@@ -1423,6 +1442,13 @@ def parse_opencode_db(agg, db_path):
             r["cr"] += cr; r["cc"] += cw; r["cc5"] += cw
             r["asst"] += 1
             r["cost"] += cost
+
+            rp = _rec_proj(project, date, model)
+            rp["tools"] += ntools
+            rp["in"] += inp; rp["out"] += out; rp["reason"] += reason
+            rp["cr"] += cr; rp["cc"] += cw; rp["cc5"] += cw
+            rp["asst"] += 1
+            rp["cost"] += cost
 
             _bump_time(agg, dt, inp + out + cr + cw, 1)
             T = agg["totals"]

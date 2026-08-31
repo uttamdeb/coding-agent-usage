@@ -136,6 +136,9 @@ format is identical across forks. Note newer builds nest sessions as
 - **opencode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
+  Because one DB holds many projects, the parser also emits `project_records` keyed by
+  `project\tdate\tmodel`; dashboard.py uses them so tokens are attributed to the project
+  that produced them instead of the file's dominant project.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
 - **Hermes Agent** (`~/.hermes/state.db`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes`): one

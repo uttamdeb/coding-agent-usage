@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 32
+CACHE_VERSION = 33
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -147,7 +147,7 @@ def build_payload():
         # 0.0 that must NOT be mistaken for "this was free".
         has_logged_cost = (source == "opencode"
                            and str(agg.get("path", "")).endswith(".db"))
-        project = agg.get("project") or "(unknown)"
+        default_project = agg.get("project") or "(unknown)"
         # One IDE per file for every source (Copilot's is the editor whose storage
         # it came from; Claude/Codex stamp an entrypoint; the rest run in exactly
         # one place), so it is resolved here rather than per record.
@@ -155,8 +155,18 @@ def build_payload():
         file_tokens = 0
         file_msgs = 0
         file_cost = 0.0
-        for key, r in agg.get("records", {}).items():
-            date, model = key.split("\t", 1)
+        # Some sources hold multiple sessions/projects in one file (opencode's DB,
+        # Cursor's state.vscdb). When they supply per-project records, use those so
+        # project attribution matches the session list rather than the file's
+        # dominant project.
+        proj_recs = agg.get("project_records")
+        if proj_recs:
+            rec_iter = ((k.split("\t", 2), r) for k, r in proj_recs.items())
+        else:
+            rec_iter = (([default_project] + key.split("\t", 1), r)
+                        for key, r in agg.get("records", {}).items())
+        for parts, r in rec_iter:
+            project, date, model = parts
             if model == "(user)":
                 # only carries user-turn counts
                 rk = (date, source, "(user)", project, ide)
@@ -206,10 +216,22 @@ def build_payload():
             slot = hourly.setdefault((date, int(hour), source), {"tokens": 0, "msgs": 0})
             slot["tokens"] += v["tokens"]; slot["msgs"] += v["msgs"]
         # project rollup
-        pk = (project, source)
-        pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
-        pr["tokens"] += file_tokens; pr["msgs"] += file_msgs
-        pr["sessions"] += 1; pr["cost"] += file_cost
+        if proj_recs:
+            # Multi-project file (e.g. opencode's DB): attribute each session's
+            # totals to its own project so the Projects tab matches the filter.
+            for s in agg.get("sessions", []):
+                p = s.get("project") or default_project
+                pk = (p, source)
+                pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
+                pr["tokens"] += s["in"] + s["out"] + s["cr"] + s["cc"]
+                pr["msgs"] += s.get("asst", 0)
+                pr["sessions"] += 1
+                pr["cost"] += s.get("cost", 0.0)
+        else:
+            pk = (default_project, source)
+            pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
+            pr["tokens"] += file_tokens; pr["msgs"] += file_msgs
+            pr["sessions"] += 1; pr["cost"] += file_cost
         for day, v in (agg.get("state", {}).get("ai_lines") or {}).items():
             slot = ai_lines.setdefault(day, {"tab_suggested": 0, "tab_accepted": 0,
                                              "composer_suggested": 0, "composer_accepted": 0})
