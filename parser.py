@@ -597,6 +597,16 @@ def parse_codex(agg, lines):
                 agg["entry"] = pl["originator"]
             if pl.get("cli_version"):
                 agg["cliver"] = pl["cli_version"]
+            # A spawned subagent's OWN rollout file self-identifies — no cross-file
+            # correlation needed, unlike Claude Code's isSidechain records which live
+            # inside the parent's log.
+            if pl.get("thread_source") == "subagent":
+                agg["subagent"] = True
+                # Stashed, not titled yet: many subagent transcripts carry no
+                # UserMessage of their own (the task was handed to them at spawn
+                # time, not as an in-band turn), so this is a last-resort label —
+                # applied in _finalize_session only if nothing better ever showed up.
+                agg["_agent_path"] = pl.get("agent_path")
             g = pl.get("git")
             if isinstance(g, dict) and g.get("branch"):
                 agg["branch"] = g["branch"]
@@ -645,6 +655,32 @@ def parse_codex(agg, lines):
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, pl.get("message") or _first_text(pl.get("content")), "prompt")
+            elif pt == "item_completed":
+                # Recent Codex CLI builds (0.151.x alpha) stopped emitting the flat
+                # agent_message/user_message payloads above. Every turn's user text,
+                # assistant text, tool activity and reasoning now arrives as ONE
+                # item_completed event wrapping an `item` whose OWN `type` names the
+                # real kind (UserMessage, AgentMessage, Reasoning, CommandExecution,
+                # FileChange, SubAgentActivity, ...). Without this branch every session
+                # written by the new format silently has 0 prompts and 0 messages —
+                # tokens/cost/tools stay correct because those come from the separate
+                # token_count and response_item events, which this format still emits
+                # unchanged.
+                item = pl.get("item") or {}
+                it = item.get("type")
+                if it == "UserMessage" and dt:
+                    _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
+                    agg["totals"]["user"] += 1
+                    _set_title(agg, _first_text(item.get("content")), "prompt")
+                elif it == "AgentMessage" and dt:
+                    model = cur_model or "Unknown"
+                    _rec(agg, _buckets(dt)[0], model)["asst"] += 1
+                    agg["totals"]["asst"] += 1
+                elif it == "SubAgentActivity" and item.get("kind") == "started":
+                    # Counted on the PARENT's own file — a spawn marker, not a token
+                    # or message event — so this session's own "delegated to a
+                    # subagent" count is known without reading any other file.
+                    agg["_spawned"] = agg.get("_spawned", 0) + 1
             elif pt in ("web_search_call", "web_search_end"):
                 if pt == "web_search_call" and dt:
                     _tool(agg, _buckets(dt)[0], "web_search")
@@ -1820,6 +1856,15 @@ def update_file(agg, source, path, editor_hint, proj_map):
 def _finalize_session(agg, source, path):
     """Roll the file's totals into a single session summary."""
     T = agg["totals"]
+    # Last-resort title for a Codex subagent that never had a UserMessage of its
+    # own — its task arrived at spawn time, not as an in-band turn. Only applied
+    # if nothing stronger (a real prompt) ever set agg["title"].
+    if agg.get("subagent") and not agg.get("title") and agg.get("_agent_path"):
+        # agent_path is namespaced ("/root/science_audit"); every sample seen has
+        # a constant, uninformative leading segment, so use the leaf only.
+        leaf = agg["_agent_path"].strip("/").split("/")[-1].replace("_", " ").replace("-", " ")
+        if leaf:
+            agg["title"] = (leaf[:1].upper() + leaf[1:])[:90]
     # rank the models used in this session by tokens (a session — especially a
     # resumed Codex rollout — can switch models mid-way)
     mt = {}
@@ -1854,5 +1899,9 @@ def _finalize_session(agg, source, path):
         "cc5": T["cc5"], "cc1": T["cc1"],
         "asst": T["asst"], "user": T["user"], "req": T["req"],
         "prem": T["prem"], "tools": T["tools"], "side": T.get("side", 0),
+        # Reuses Cursor's "subagents" (a count) — here, how many SubAgentActivity
+        # "started" markers this Codex session's own file recorded. 0 for anyone
+        # who didn't spawn any, so it renders identically to Cursor's absence case.
+        "subagents": agg.get("_spawned", 0),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
     }]

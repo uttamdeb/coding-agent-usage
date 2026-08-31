@@ -57,6 +57,25 @@ Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
 
 ## Per-source quirks
 
+- **Codex has (at least) two incompatible rollout schemas.** Older/stable CLIs emit
+  flat `event_msg` payloads (`agent_message`, `user_message`, `token_count`). Recent
+  alpha builds (seen: `0.151.x`) wrap turn content in one `item_completed` event
+  whose own `item.type` names the real kind (`UserMessage`, `AgentMessage`,
+  `Reasoning`, `CommandExecution`, `SubAgentActivity`, ...) — `token_count` and the
+  `response_item` tool-call events are unchanged across both, which is exactly why a
+  schema mismatch here degrades quietly: tokens/cost/tools keep working while
+  prompts/messages silently zero out. `parse_codex` handles both; if Codex ships a
+  third shape, check `event_msg` payload types in a fresh rollout file before
+  assuming the existing branches still apply.
+- **Codex subagents self-identify** via `session_meta.thread_source == "subagent"`
+  in the CHILD's own file (plus `parent_thread_id`, `agent_path`, `agent_nickname`)
+  — no cross-file correlation needed, unlike Claude Code. A subagent's task is
+  usually never an in-band `UserMessage` in its own log (it arrives at spawn time),
+  so `_finalize_session` falls back to the leaf of `agent_path` as its title, and
+  only when no real prompt was ever found. The PARENT's own file separately counts
+  `SubAgentActivity` "started" markers into `subagents` (a count, the same field
+  Cursor uses) — read that, not `side` (which Codex never sets: its subagents are
+  wholly separate sessions, not sidechain records mixed into the parent's stream).
 - **Cursor** (`state.vscdb`): sessions in `cursorDiskKV` under `composerData:*` (newer
   builds also `composerHeaders`); messages are `bubbleId:*`. Each bubble has its **own**
   `createdAt` — use it, not the session's, or a months-long session lands on day one.

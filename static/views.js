@@ -1353,10 +1353,14 @@ function findContextTax(d){
 /* Delegating exploration to a subagent keeps the parent's context small. */
 function findSubagents(d){
   const parents = d.sessions.filter(s => !s.subagent);
-  const heavy = parents.filter(s => s.tools >= 150 && !s.side);
+  // "delegated" shows up two different ways depending on the tool: Claude Code's
+  // subagent tokens land back on the parent's own token stream (s.side); Codex's
+  // subagents are wholly separate sessions, so the parent only carries a spawn
+  // COUNT (s.subagents, from SubAgentActivity "started" markers in its own log).
+  const heavy = parents.filter(s => s.tools >= 150 && !s.side && !s.subagents);
   if(heavy.length < 2) return null;
   const spend = heavy.reduce((a,s)=>a+s.cost,0);
-  const used = parents.filter(s => s.side > 0).length;
+  const used = parents.filter(s => s.side > 0 || s.subagents > 0).length;
   return {
     id:"subagents", impact: spend*0.15, sev: spend>100?"high":"low", tools:[...new Set(heavy.map(x=>x.source))],
     title:"Tool-heavy sessions that never delegated to a subagent",
