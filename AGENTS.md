@@ -112,6 +112,13 @@ format is identical across forks. Note newer builds nest sessions as
   prompts/messages silently zero out. `parse_codex` handles both; if Codex ships a
   third shape, check `event_msg` payload types in a fresh rollout file before
   assuming the existing branches still apply.
+- **Codex's session title lives outside the rollout.** `~/.codex/session_index.jsonl`
+  maps thread id → `thread_name`, and that is the name Codex's own UI shows. It is
+  append-only, so a renamed thread gets a NEW line and the LAST one wins — same
+  shape as Claude's `aiTitle`. Applied at rank "ai" so it beats a prompt snippet.
+  ~80% coverage here; threads with no entry keep the first-prompt title. Do NOT
+  reach for the editor's `agentSessions.model.cache` instead: it holds the same
+  string but appears and vanishes within seconds while VS Code runs.
 - **Codex subagents self-identify** via `session_meta.thread_source == "subagent"`
   in the CHILD's own file (plus `parent_thread_id`, `agent_path`, `agent_nickname`)
   — no cross-file correlation needed, unlike Claude Code. A subagent's task is

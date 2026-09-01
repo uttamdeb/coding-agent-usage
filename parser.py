@@ -29,6 +29,12 @@ def _leaf(path):
 # Source locations
 # ---------------------------------------------------------------------------
 CLAUDE_GLOBS = [os.path.join(HOME, ".claude", "projects", "**", "*.jsonl")]
+# Codex's own index of thread names — the title it shows in its UI. It is NOT in
+# the rollout file, and the short name the editor displays lives only in a VS Code
+# cache key that appears and vanishes within seconds, so this is the one durable
+# source. Append-only: a renamed thread gets a NEW line, so the LAST entry wins.
+CODEX_SESSION_INDEX = os.path.join(HOME, ".codex", "session_index.jsonl")
+
 CODEX_GLOBS = [
     os.path.join(HOME, ".codex", "sessions", "**", "*.jsonl"),
     os.path.join(HOME, ".codex", "archived_sessions", "**", "*.jsonl"),
@@ -1982,12 +1988,51 @@ def _ide_of(source, agg, editor_hint=None):
     return ide
 
 
+_CODEX_NAMES = {"at": 0.0, "sig": None, "map": {}}
+
+
+def _codex_thread_names():
+    """{thread id: latest thread_name} from Codex's own session index."""
+    try:
+        st = os.stat(CODEX_SESSION_INDEX)
+        sig = (st.st_size, st.st_mtime)
+    except OSError:
+        return {}
+    if sig == _CODEX_NAMES["sig"] and time.time() - _CODEX_NAMES["at"] < 60:
+        return _CODEX_NAMES["map"]
+    out = {}
+    try:
+        with open(CODEX_SESSION_INDEX) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                tid, name = o.get("id"), o.get("thread_name")
+                if tid and name:
+                    out[tid] = name          # append-only: last line wins
+    except OSError as e:
+        sys.stderr.write(f"[codex] {CODEX_SESSION_INDEX}: {e}\n")
+        return _CODEX_NAMES["map"]
+    _CODEX_NAMES.update(at=time.time(), sig=sig, map=out)
+    return out
+
+
 def _finalize_session(agg, source, path):
     """Roll the file's totals into a single session summary."""
     T = agg["totals"]
     # Last-resort title for a Codex subagent that never had a UserMessage of its
     # own — its task arrived at spawn time, not as an in-band turn. Only applied
     # if nothing stronger (a real prompt) ever set agg["title"].
+    # Codex's own name for the thread beats a prompt snippet — same standing as
+    # Claude's aiTitle, and the reason the dashboard disagreed with Codex's UI.
+    if source == "codex" and agg.get("_session_id"):
+        name = _codex_thread_names().get(agg["_session_id"])
+        if name:
+            _set_title(agg, name, "ai")
     if agg.get("subagent") and not agg.get("title") and agg.get("_agent_path"):
         # agent_path is namespaced ("/root/science_audit"); every sample seen has
         # a constant, uninformative leading segment, so use the leaf only.
