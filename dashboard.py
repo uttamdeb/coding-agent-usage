@@ -40,10 +40,24 @@ def load_cache():
         return
     try:
         data = json.load(open(CACHE_PATH))
-        if data.get("version") == CACHE_VERSION:
-            _state["files"] = data.get("files", {})
     except Exception:
-        pass
+        return
+    files = data.get("files", {})
+    if data.get("version") == CACHE_VERSION:
+        _state["files"] = files
+        return
+    # Version changed, so the shape may have. Live logs are simply re-parsed from
+    # disk — but ARCHIVED entries CANNOT be: their source files are gone. Dropping
+    # them would silently destroy history the Storage tab explicitly promises is
+    # safe to delete ("the dashboard keeps every session it has already parsed").
+    # Keep them: newer fields are read with .get() defaults everywhere, so an
+    # old-shape archived entry degrades rather than breaks.
+    kept = {p: a for p, a in files.items() if a.get("archived")}
+    if kept:
+        _state["files"] = kept
+        sys.stderr.write(
+            f"[cache] version {data.get('version')} -> {CACHE_VERSION}: re-parsing live "
+            f"logs, retained {len(kept)} archived session(s) that cannot be re-read\n")
 
 
 def save_cache():

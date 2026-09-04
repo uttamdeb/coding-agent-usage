@@ -82,6 +82,21 @@ Adding a VS Code fork is one entry in `COPILOT_ROOTS` + `EDITOR_LABEL`; the chat
 format is identical across forks. Note newer builds nest sessions as
 `chatSessions/<uuid>/index.json` instead of a flat file — both globs are needed.
 
+## The durable ledger is load-bearing — treat it as data, not cache
+
+Once a log is deleted from disk its aggregates exist ONLY in `.usage_cache.json`,
+marked `archived`. The Storage tab actively tells users deleting old logs is safe,
+so that file stops being a cache and becomes the sole record. Two consequences:
+
+- `load_cache()` **keeps `archived` entries across a `CACHE_VERSION` bump** while
+  re-parsing live logs normally. They cannot be re-derived — the source is gone — so
+  discarding them on a version change would silently destroy history the UI promised
+  to keep. Newer fields are read with `.get()` defaults, so an old-shape archived
+  entry degrades rather than breaks.
+- The Settings panel's **Rebuild / Delete cache** actions still drop archived
+  sessions permanently; both warn about exactly this. Don't add a third path that
+  clears the cache without the same warning.
+
 ## Field conventions that differ by source (do not "fix" these)
 
 - **User turns** land in two different places: Claude/Claude Desktop/Codex write them
