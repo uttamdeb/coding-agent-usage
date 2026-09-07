@@ -187,6 +187,14 @@ PRICING = {
     "GPT-5.6 Sol": (5, 30, 0, 0, 0.50),
     "GPT-5.6 Terra": (2.5, 15, 0, 0, 0.25),
     "GPT-5.6 Luna": (1, 6, 0, 0, 0.10),
+    # GPT-6 Astra — verified directly against developers.openai.com/api/docs/models/
+    # gpt-6-astra (2026-09). Cache-write tiers are 0 like the other OpenAI rows:
+    # Codex's token_count event reports only cached_input_tokens (a read), never a
+    # cache-write count, so cc/cc5/cc1 stay 0 on every Codex record regardless of
+    # what's in this slot — OpenAI's own $12.50/1M cache-write rate is unused here.
+    # Same >272K-input surcharge caveat as GPT-5.6/5.5 (2x in+cache, 1.5x out) is
+    # not modeled — no source currently threads context length into _cost().
+    "GPT-6 Astra": (10, 50, 0, 0, 1),
     # OpenAI GPT-5.4 / 5.5 — verified from OpenAI API pricing docs (2026-07).
     # NOTE: GPT-5.5 has a >272K-input surcharge (2x in / 1.5x out for the session)
     # not modeled here, so heavy-context Codex sessions may cost somewhat more.
