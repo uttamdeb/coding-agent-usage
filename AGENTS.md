@@ -93,12 +93,25 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   discarding them on a version change would silently destroy history the UI promised
   to keep. Newer fields are read with `.get()` defaults, so an old-shape archived
   entry degrades rather than breaks.
+- **`--rebuild` destroys archived sessions too**, not just the Settings buttons — it
+  skips the cache entirely and re-parses from disk, and an archived session has no
+  disk to parse. Back up `.usage_cache.json` before running it on a machine whose
+  logs have been archived off.
 - The Settings panel's **Rebuild / Delete cache** actions still drop archived
   sessions permanently; both warn about exactly this. Don't add a third path that
   clears the cache without the same warning.
 
 ## Field conventions that differ by source (do not "fix" these)
 
+- **A prompt typed while Claude is working is not a `type:"user"` record.** Claude Code
+  queues it and writes `type:"attachment"` with `attachment.type == "queued_command"`,
+  so the user branch never sees it — that silently undercounted prompts by ~23%.
+  Count it, but only `commandMode == "prompt"` (`task-notification` is the harness
+  telling itself a background task finished), with non-empty text that isn't an
+  `<ide_opened_file>` / `<system-reminder>` injection riding the same channel. Do NOT
+  dedupe against `user` records by text: the same words seconds apart are usually the
+  user pressing enter twice, and `source_uuid` does not link the two. Codex needs none
+  of this — it logs a steer as an ordinary `UserMessage`.
 - **User turns** land in two different places: Claude/Claude Desktop/Codex write them
   to a `(user)` marker row in `records`; Copilot/Cursor write them onto the model row.
   Neither writes both, so summing `r.user` across all records is correct — but a check

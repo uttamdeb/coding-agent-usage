@@ -593,6 +593,30 @@ def parse_claude(agg, lines):
                 if not side or agg.get("subagent"):
                     _set_title(agg, _first_text(content), "prompt")
 
+        elif t == "attachment":
+            # A message typed WHILE Claude is working ("steering") is never written
+            # as a type:"user" record — Claude Code queues it and logs it here, so
+            # the branch above never sees it and those prompts went uncounted.
+            #
+            # Filters, all load-bearing:
+            #   commandMode "task-notification" is the harness telling itself a
+            #     background task finished — not something the user typed.
+            #   empty prompts are queue bookkeeping with no text.
+            #   <ide_opened_file> / <system-reminder> are context the editor injects
+            #     through the same channel; they are not prompts either.
+            # Deliberately NOT deduped against type:"user" records: the same text
+            # can legitimately appear in both, seconds apart, because the user
+            # really did press enter twice (verified: "yes od it" at :09 as a user
+            # turn, again at :13 queued, then "yes do it" at :17 — three real sends,
+            # not one event logged three times). source_uuid does not link the two.
+            a = o.get("attachment") or {}
+            if a.get("type") == "queued_command" and a.get("commandMode") == "prompt" and dt:
+                txt = _first_text(a.get("prompt")).strip()
+                if txt and not txt.startswith(("<ide_", "<system-reminder")):
+                    r = _rec(agg, _buckets(dt)[0], "(user)")
+                    r["user"] += 1
+                    agg["totals"]["user"] += 1
+
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
     if model_tokens:
