@@ -1989,6 +1989,12 @@ IDE_FROM_ENTRY = {
     "codex_desktop": "Codex Desktop",
     "codex_work_desktop": "Codex Desktop",
     "local-agent": "Claude Desktop",
+    # A newer entrypoint: the Claude Code CLI stamps this when launched from
+    # inside the Claude Desktop app itself — distinct from source "claude-desktop"
+    # (Desktop's own agent-mode logs, a wholly different file format), but from
+    # the user's chair both are "I was in the Claude Desktop app," so they collapse
+    # to the same IDE label rather than showing as two confusingly-similar rows.
+    "claude-desktop": "Claude Desktop",
 }
 
 # Sources that only ever run in one place — no per-record signal needed.

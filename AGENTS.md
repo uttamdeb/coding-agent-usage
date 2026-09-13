@@ -65,6 +65,13 @@ Copilot's comes from *which editor's storage* the file sat in, Claude/Codex stam
 place. An unrecognised entrypoint passes through **as itself** rather than being forced
 into a bucket, so a new host appears rather than silently becoming "VS Code".
 
+**A new `entrypoint` value can collide in spelling with an unrelated `source`.**
+`entrypoint: "claude-desktop"` on `source: "claude"` (Claude Code launched from
+inside the Desktop app) and `source: "claude-desktop"` (Desktop's own agent-mode
+logs — a different file format) both mean "the Claude Desktop app" to the user, but
+the first fell through `IDE_FROM_ENTRY` unmapped and showed as a separate, oddly-cased
+row. Mapped alongside `local-agent`, the older entrypoint for the same app.
+
 **Codex's VS Code variant is recovered from the editor, not the log.** Codex only ever
 writes `vscode`, so Insiders work is indistinguishable from stable in the rollout itself.
 But each editor's `globalStorage/state.vscdb` carries the Codex extension's per-thread UI
