@@ -386,6 +386,17 @@ def _blank_agg(source, path):
                    "tools": 0, "side": 0},
         "first_ts": None,
         "last_ts": None,
+        # Last real-turn timestamp seen, for gap-capped active-time tracking.
+        # Only meaningful for single-session sources (claude/codex/copilot):
+        # for those, parsing is incremental (byte-offset resume), so this MUST
+        # persist across calls or every incremental chunk would look like a
+        # burst with no prior event. It is harmless on a full reparse too — a
+        # fresh _blank_agg resets it to None, and that one call walks the whole
+        # file in order, so nothing is lost. Multi-session sources (Cursor,
+        # opencode DB, Hermes) track this per-session in a local dict instead,
+        # since one file holds many unrelated sessions and they are always
+        # fully reparsed from scratch — see their own parse_* functions.
+        "_active_last": None,
         # transient stream state for incremental codex parsing
         "state": {"cur_model": None},
         "sessions": [],
@@ -397,9 +408,37 @@ def _rec(agg, date, model):
     r = agg["records"].get(key)
     if r is None:
         r = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
-              "asst": 0, "user": 0, "req": 0, "prem": 0.0, "tools": 0, "cost": 0.0}
+              "asst": 0, "user": 0, "req": 0, "prem": 0.0, "tools": 0, "cost": 0.0,
+              "active": 0.0}
         agg["records"][key] = r
     return r
+
+
+# "Active time" — a gap-capped estimate of how long a real person was actually
+# driving the tool, the same heuristic WakaTime/RescueTime use: sum the gaps
+# BETWEEN consecutive real turns, but only when the gap is short enough that the
+# user was plausibly still there. A long gap means they stepped away; the model
+# "thinking" or running tools for a while does not, which is why the cap is
+# generous rather than tight.
+ACTIVE_GAP_CAP = 300.0  # seconds. Long enough to bridge a normal turn (thinking +
+                        # a few tool calls); short enough that a coffee break or
+                        # an overnight-resumed session doesn't count as "working".
+
+
+def _active_gap(prev_iso, dt):
+    """Seconds to attribute as active time for one event, given the previous
+    real event's ISO timestamp (or None/unparseable). Returns 0 for the first
+    event of a burst, or when the gap exceeds the cap — an unusually long gap
+    means the user stepped away, not that they worked through it. Also 0, safely,
+    if events arrive out of chronological order (a negative gap never passes)."""
+    if not prev_iso:
+        return 0.0
+    try:
+        prev = datetime.fromisoformat(prev_iso)
+    except (TypeError, ValueError):
+        return 0.0
+    gap = (dt - prev).total_seconds()
+    return gap if 0 < gap <= ACTIVE_GAP_CAP else 0.0
 
 
 def _tool(agg, date, name):
@@ -550,6 +589,8 @@ def parse_claude(agg, lines):
                             tools += 1
                 r["tools"] += tools
                 _bump_time(agg, dt, inp + out + cr + cc, 1)
+                r["active"] += _active_gap(agg["_active_last"], dt)
+                agg["_active_last"] = dt.isoformat()
                 date0 = _buckets(dt)[0]
                 tok = inp + out + cr + cc
                 # Which Skill was driving this request, if any. Claude Code stamps
@@ -696,6 +737,8 @@ def parse_codex(agg, lines):
                     r["out"] += out
                     r["reason"] += reason
                     _bump_time(agg, dt, inp + out, 0)
+                    r["active"] += _active_gap(agg["_active_last"], dt)
+                    agg["_active_last"] = dt.isoformat()
                     # Codex reports the FULL context it sent as input_tokens (cached
                     # or not), which is exactly the per-request context size — bucket
                     # it the same way as Claude Code so the finding is cross-tool.
@@ -826,6 +869,8 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     rec["req"] += 1; rec["user"] += 1; rec["asst"] += 1
     rec["prem"] += mult; rec["tools"] += ntools
     _bump_time(agg, dt, est_in + est_out, 1)
+    rec["active"] += _active_gap(agg["_active_last"], dt)
+    agg["_active_last"] = dt.isoformat()
     T = agg["totals"]
     T["in"] += est_in; T["out"] += est_out
     T["req"] += 1; T["user"] += 1; T["asst"] += 1
@@ -929,6 +974,8 @@ def parse_gemini(agg, path):
         r["asst"] += 1   # 1 prompt ≈ 1 model turn (Gemini logs no responses/tokens)
         r["user"] += 1
         _bump_time(agg, dt, 0, 1)
+        r["active"] += _active_gap(agg["_active_last"], dt)
+        agg["_active_last"] = dt.isoformat()
         agg["totals"]["asst"] += 1
         agg["totals"]["user"] += 1
 
@@ -1085,6 +1132,11 @@ def parse_cursor(agg, db_path):
         })
 
     sess = {}
+    # Per-session last-event timestamp for active-time gaps. A local dict, not
+    # agg-level: this file holds MANY unrelated sessions and is always fully
+    # reparsed on change (see update_file), so nothing needs to persist across
+    # calls — it just must not bridge a gap across two different sessions.
+    active_last = {}
     path_re = _CURSOR_PATH_RE
 
     def _top(d):
@@ -1124,11 +1176,14 @@ def parse_cursor(agg, db_path):
             T["in"] += it
             T["out"] += ot
             s = sess.setdefault(cid, {"in": 0, "out": 0, "asst": 0, "user": 0, "tools": 0,
-                                      "think": 0, "proj": {}, "days": {},
+                                      "think": 0, "proj": {}, "days": {}, "active": 0.0,
                                       "start": dt.isoformat(), "end": dt.isoformat()})
             dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
-                                             "asst": 0, "user": 0, "tools": 0})
+                                             "asst": 0, "user": 0, "tools": 0, "active": 0.0})
             dd["in"] += it; dd["out"] += ot
+            gap = _active_gap(active_last.get(cid), dt)
+            active_last[cid] = dt.isoformat()
+            r["active"] += gap; s["active"] += gap; dd["active"] += gap
             iso = dt.isoformat()
             if iso < s["start"]:
                 s["start"] = iso
@@ -1181,7 +1236,7 @@ def parse_cursor(agg, db_path):
             "start": s["start"], "end": s["end"],
             "in": s["in"], "out": s["out"], "cr": 0, "cc": 0, "cc5": 0, "cc1": 0,
             "asst": s["asst"], "user": s["user"], "req": 0, "prem": 0.0,
-            "tools": s["tools"], "side": 0, "days": s["days"],
+            "tools": s["tools"], "side": 0, "days": s["days"], "active": round(s["active"], 1),
             "mode": ("max " + mode) if (mode and c.get("maxmode")) else mode,
             "lines_add": c.get("added", 0), "lines_del": c.get("removed", 0),
             "think_ms": s["think"], "subagents": c.get("subs", 0),
@@ -1321,6 +1376,8 @@ def parse_opencode(agg, session_dir, msg_files):
         r["cr"] += cr; r["cc"] += cw; r["cc5"] += cw  # untiered cache write -> 5m rate
         r["asst"] += 1
         _bump_time(agg, dt, inp + out + cr + cw, 1)
+        r["active"] += _active_gap(agg["_active_last"], dt)
+        agg["_active_last"] = dt.isoformat()
         T = agg["totals"]
         T["in"] += inp; T["out"] += out; T["reason"] += reason
         T["cr"] += cr; T["cc"] += cw; T["cc5"] += cw; T["asst"] += 1
@@ -1349,6 +1406,12 @@ def parse_opencode_db(agg, db_path):
     sessions_meta = {}
     sess = {}          # sid -> running totals
     model_tokens = {}
+    # Per-session last-message timestamp for active-time gaps (see parse_cursor
+    # for why this is a local dict, not agg-level). The message table has no
+    # ORDER BY here, but SQLite returns un-indexed rows in insertion order, and
+    # opencode writes messages chronologically — the same assumption the "weak
+    # title from first user prompt" logic below already depends on.
+    active_last = {}
     try:
         con = _open_ro_sqlite(db_path)
     except Exception:
@@ -1412,6 +1475,13 @@ def parse_opencode_db(agg, db_path):
                 r["user"] += 1
                 agg["totals"]["user"] += 1
                 _bump_time(agg, dt, 0, 0)
+                # No session object touched here (only the assistant branch
+                # below creates one) — but bumping active_last still means the
+                # NEXT assistant reply's gap is measured from this prompt, so
+                # "time waiting for/reading the reply" correctly lands on the
+                # session once that branch runs.
+                r["active"] += _active_gap(active_last.get(sid), dt)
+                active_last[sid] = dt.isoformat()
                 # weak title from first user prompt of the session
                 if meta and not meta.get("_weak_title_set"):
                     text = ""
@@ -1463,6 +1533,9 @@ def parse_opencode_db(agg, db_path):
             r["cost"] += cost
 
             _bump_time(agg, dt, inp + out + cr + cw, 1)
+            gap = _active_gap(active_last.get(sid), dt)
+            active_last[sid] = dt.isoformat()
+            r["active"] += gap
             T = agg["totals"]
             T["in"] += inp; T["out"] += out; T["reason"] += reason
             T["cr"] += cr; T["cc"] += cw; T["cc5"] += cw; T["asst"] += 1
@@ -1480,6 +1553,7 @@ def parse_opencode_db(agg, db_path):
             s["cr"] += cr; s["cc"] += cw; s["cc5"] += cw
             s["asst"] += 1
             s["tools"] += ntools
+            s["active"] += gap
             s["cost"] += cost
 
         # ---- build per-session summaries ----------------------------------
@@ -1507,7 +1581,7 @@ def parse_opencode_db(agg, db_path):
                 "cc5": s["cc5"], "cc1": s["cc1"],
                 "asst": s["asst"], "user": s["user"], "req": 0,
                 "prem": 0.0, "tools": s["tools"], "side": 0,
-                "cost": s["cost"],
+                "cost": s["cost"], "active": round(s.get("active", 0), 1),
                 "cliver": meta.get("version"),
                 "mode": agent,
             })
@@ -1520,7 +1594,7 @@ def parse_opencode_db(agg, db_path):
 
 def _blank_opencode_session():
     return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
-            "asst": 0, "user": 0, "tools": 0, "cost": 0.0}
+            "asst": 0, "user": 0, "tools": 0, "cost": 0.0, "active": 0.0}
 
 
 # ===========================================================================
@@ -1566,7 +1640,7 @@ def parse_hermes(agg, db_path):
             "started": started, "ended": ended or started,
             "archived": bool(archived), "channel": chan,
             "days": {}, "asst": 0, "user": 0, "tools": 0, "req": 0,
-            "in": 0, "out": 0, "cr": 0, "cc": 0, "reason": 0,
+            "in": 0, "out": 0, "cr": 0, "cc": 0, "reason": 0, "active": 0.0,
         }
 
     try:
@@ -1599,13 +1673,19 @@ def parse_hermes(agg, db_path):
         s["in"] += it; s["out"] += ot; s["cr"] += cr; s["cc"] += cw
         s["reason"] += reason; s["req"] += calls
         dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
-                                          "asst": 0, "user": 0, "tools": 0})
+                                          "asst": 0, "user": 0, "tools": 0, "active": 0.0})
         dd["in"] += it; dd["out"] += ot; dd["cr"] += cr; dd["cc"] += cw
         model_tokens.setdefault(sid, {})
         model_tokens[sid][disp] = model_tokens[sid].get(disp, 0) + it + ot
 
     dom_model = {sid: max(mt, key=mt.get) for sid, mt in model_tokens.items() if mt}
 
+    # Per-session last-message timestamp for active-time gaps. Declared here,
+    # not above: only THIS loop's timestamps are real per-turn events. The
+    # session_model_usage loop above is one summary row per (session, model)
+    # pair — its "first_seen"/"last_seen" span the whole pair's usage, not a
+    # single turn, so it must never feed a gap calculation.
+    active_last = {}
     try:
         mrows = cur.execute(
             "SELECT session_id, role, timestamp, tool_calls FROM messages").fetchall()
@@ -1622,7 +1702,10 @@ def parse_hermes(agg, db_path):
         model = dom_model.get(sid) or _normalize_hermes(s.get("model")) or "Unknown"
         r = _rec(agg, date, model)
         dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
-                                          "asst": 0, "user": 0, "tools": 0})
+                                          "asst": 0, "user": 0, "tools": 0, "active": 0.0})
+        gap = _active_gap(active_last.get(sid), dt)
+        active_last[sid] = dt.isoformat()
+        r["active"] += gap; s["active"] += gap; dd["active"] += gap
         if role == "user":
             r["user"] += 1; agg["totals"]["user"] += 1; s["user"] += 1; dd["user"] += 1
         elif role == "assistant":
@@ -1669,6 +1752,7 @@ def parse_hermes(agg, db_path):
             "cc5": s["cc"], "cc1": 0,
             "asst": s["asst"], "user": s["user"], "req": s["req"], "prem": 0.0,
             "tools": s["tools"], "side": 0, "days": s["days"],
+            "active": round(s.get("active", 0), 1),
             "archived_session": bool(s.get("archived")),
         })
     agg["sessions"] = out
@@ -2080,8 +2164,11 @@ def _finalize_session(agg, source, path):
     # rank the models used in this session by tokens (a session — especially a
     # resumed Codex rollout — can switch models mid-way)
     mt = {}
+    active_total = 0.0
     for k, r in agg["records"].items():
         mdl = k.split("\t", 1)[1]
+        active_total += r.get("active", 0.0)   # active time isn't per-model, but
+                                                 # _rec() carries it on every record
         if mdl == "(user)":
             continue
         mt[mdl] = mt.get(mdl, 0) + r["in"] + r["out"]
@@ -2116,5 +2203,6 @@ def _finalize_session(agg, source, path):
         # who didn't spawn any, so it renders identically to Cursor's absence case.
         "subagents": agg.get("_spawned", 0),
         "ide": _ide_of(source, agg),
+        "active": round(active_total, 1),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
     }]

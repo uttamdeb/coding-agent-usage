@@ -63,6 +63,16 @@ const fmtUSD = n => { n=n||0;
 const fmtUSD2 = n => "$"+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtNum = n => (n||0).toLocaleString();
 const fmtPct = n => (n*100).toFixed(n<0.1?1:0)+"%";
+/* Seconds -> a duration string, same tiering style as fmtTok. This is ACTIVE
+   time (gap-capped, see parser.py's ACTIVE_GAP_CAP) — a lower bound on time
+   actually spent driving the tool, not wall-clock session length. */
+const fmtDur = secs => { secs=secs||0;
+  if(secs<60) return Math.round(secs)+"s";
+  const m=secs/60;
+  if(m<90) return Math.round(m)+"m";
+  const h=m/60;
+  if(h<48) return h.toFixed(1)+"h";
+  return (h/24).toFixed(1)+"d"; };
 const fmtBytes = n => { n=n||0;
   if(n>=1e9) return (n/1e9).toFixed(2)+" GB";
   if(n>=1e6) return (n/1e6).toFixed(0)+" MB";
@@ -176,15 +186,15 @@ function activeInRange(s, r){
 function clipSession(s, r){
   const D = s.days;
   if(!D) return Object.assign({}, s, {span:1, clipped:false});
-  let cost=0,i=0,o=0,cr=0,cc=0,asst=0,user=0,tools=0,prem=0,inN=0,allN=0;
+  let cost=0,i=0,o=0,cr=0,cc=0,asst=0,user=0,tools=0,prem=0,active=0,inN=0,allN=0;
   for(const d in D){
     allN++;
     if(d<r.from || d>r.to) continue;
     const v=D[d]; inN++;
     cost+=v[0]; i+=v[1]; o+=v[2]; cr+=v[3]; cc+=v[4];
-    asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0;
+    asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0; active+=v[9]||0;
   }
-  return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem,
+  return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem, active,
     req:asst, span:allN, clipped:inN<allN});
 }
 

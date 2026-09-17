@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 34
+CACHE_VERSION = 35
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -179,7 +179,7 @@ def build_payload():
                 continue
             rk = (date, source, model, project, ide)
             slot = records.setdefault(rk, _zero())
-            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools"):
+            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active"):
                 slot[f] += r.get(f, 0)
             slot["prem"] += r.get("prem", 0.0)
             c = _cost(source, model, r["in"], r["out"], r["cr"],
@@ -239,11 +239,12 @@ def build_payload():
             date, model = key.split("\t", 1)
             dd = file_days.setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
                                              "asst": 0, "user": 0, "tools": 0,
-                                             "prem": 0.0, "cost": 0.0})
+                                             "prem": 0.0, "cost": 0.0, "active": 0.0})
             if model == "(user)":
                 dd["user"] += r.get("user", 0)
+                dd["active"] += r.get("active", 0.0)
                 continue
-            for f in ("in", "out", "cr", "cc", "asst", "user", "tools"):
+            for f in ("in", "out", "cr", "cc", "asst", "user", "tools", "active"):
                 dd[f] += r.get(f, 0)
             dd["prem"] += r.get("prem", 0.0)
             dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
@@ -261,7 +262,8 @@ def build_payload():
             else:
                 days = file_days
             s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],
-                              v["asst"], v["user"], v["tools"], round(v.get("prem", 0), 4)]
+                              v["asst"], v["user"], v["tools"], round(v.get("prem", 0), 4),
+                              round(v.get("active", 0), 1)]
                           for d, v in sorted(days.items())}
             # `archived` is stamped on the aggregate by refresh() after the parse,
             # so read it from the aggregate rather than the frozen session copy
@@ -712,7 +714,8 @@ def build_storage():
 
 def _zero():
     return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
-            "asst": 0, "user": 0, "req": 0, "tools": 0, "prem": 0.0, "cost": 0.0}
+            "asst": 0, "user": 0, "req": 0, "tools": 0, "prem": 0.0, "cost": 0.0,
+            "active": 0.0}
 
 
 # ---------------------------------------------------------------------------

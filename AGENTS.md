@@ -254,6 +254,47 @@ and the MCP servers configured in `~/.claude.json` (`_mcp_servers()`) compared a
 appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
 `google-workspace` shows up in tool names as `workspace`.
 
+## Active time — a gap-capped estimate, not wall-clock length
+
+`records`/`sessions` carry `active` seconds: the sum of gaps BETWEEN consecutive real
+turns, counted only when the gap is <= `ACTIVE_GAP_CAP` (300s, `parser.py`) — the same
+heuristic WakaTime/RescueTime use. It is a lower bound on time actually spent driving
+the tool, deliberately not `end - start`: a Codex session resumed after three days away
+must not report three days of "active" time. Formatted client-side by `fmtDur()`.
+
+- **Computed at the same choke point every source already shares**: `_bump_time()`
+  receives a real timestamp at every one of its 11 call sites, so `_active_gap()` sits
+  right next to it rather than duplicating cap logic per source.
+- **Single-session sources** (Claude/Claude Desktop, Codex, Copilot, legacy opencode —
+  one file per session) persist the last-event timestamp on `agg["_active_last"]`,
+  because Claude/Codex/Copilot-jsonl parse incrementally (byte-offset resume): the
+  function only ever sees the NEW lines, so the previous timestamp must survive across
+  calls or every incremental chunk looks like the start of a fresh burst. A fresh
+  `_blank_agg` (full reparse) correctly resets it to `None`.
+- **Multi-session sources** (Cursor, opencode's SQLite DB, Hermes — one store holding
+  many unrelated sessions) use a LOCAL dict keyed by session id instead, never
+  `agg`-level: these are always fully reparsed from scratch on change (see
+  `update_file`), so nothing needs to persist, and persisting at the `agg` level would
+  incorrectly bridge a gap across two different sessions in the same store.
+- **Not every timestamp in a source is a real turn.** Hermes' `session_model_usage` is
+  one SUMMARY row per (session, model) pair — its `first_seen`/`last_seen` span the
+  whole pairing, not a single turn — so it must never feed a gap calculation; only the
+  `messages` table's per-row timestamps do. Codex's `token_count` event and Copilot's
+  `_copilot_apply_request` ARE legitimate per-turn signals (same events `_bump_time`
+  already used for the activity heatmap), so both participate normally.
+- **Copilot legitimately measures near-zero.** Its interactions are one-shot
+  completions, not an agentic tool loop, so consecutive events are usually well over
+  the 5-minute cap apart. That is the heuristic doing its job, not a parsing gap.
+- **opencode's SQLite sessions inherit an existing imprecision**, not a new one: they
+  have no per-session `days` breakdown (only Cursor and Hermes build one), so
+  `dashboard.py` falls back to the whole-DB `file_days` for their per-day figures —
+  true for every field, not just `active`. The session-level total (not per-day) is
+  exact.
+- The positional `s.days[date]` array gained a 10th slot, **appended, not inserted** —
+  `[cost,in,out,cr,cc,asst,user,tools,prem,active]` — specifically so nothing that reads
+  it by index elsewhere needs to change. `static/core.js`'s `clipSession()` is the one
+  place that unpacks it.
+
 ## Gotchas
 
 - The **PWA service worker is opt-in** (gear menu, `localStorage` `aiu.pwa`) and never
@@ -263,5 +304,16 @@ appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
   second reload. `/api/` is never intercepted.
 - **Durable ledger**: sessions pruned from disk stay counted and are marked `archived`, so
   totals never silently shrink.
+- **`--rebuild` is genuinely destructive on a machine with archived history** — it is not
+  just a Settings-panel-only hazard (see above). Forgetting this once already wiped 251
+  archived Copilot sessions from the running cache mid-session; recovered from the same
+  `~/ai-usage-archives/usage_cache_backup_*.json` this file already tells you to make.
+  Check `ls ~/ai-usage-archives/` (or wherever archives were made) BEFORE running
+  `--rebuild`, every time — not just the first time.
+- A `.dd-panel` that can overflow its `max-height` needs its most important action
+  (here: the range picker's "Apply custom range") wrapped in `.dd-pin`, a
+  `position:sticky` footer pulled into the panel's own padding — otherwise it silently
+  requires scrolling to reach, which is how the custom date range historically hid its
+  own submit button.
 - Anything shown as a shell command must be built server-side from real discovered paths
   and `os.name` (`_cleanup_plan`) — never a hardcoded `~/Library/...` string.

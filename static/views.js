@@ -10,13 +10,15 @@ function buildRangePanel(){
     `<div class="dd-head">Range</div>` +
     PRESETS.map(([k,l])=>`<div class="dd-item" data-preset="${k}">
         <span>${l}</span>${S.preset===k?'<span class="v">●</span>':''}</div>`).join("") +
-    `<div class="dd-sep"></div><div class="dd-head">Custom</div>
-     <div class="dd-item" style="gap:6px">
-       <input type="date" class="field" id="dFrom" value="${r.from}" style="flex:1">
-       <span class="dim">→</span>
-       <input type="date" class="field" id="dTo" value="${r.to}" style="flex:1">
-     </div>
-     <div class="dd-item" data-apply="1" style="justify-content:center;color:var(--accent);font-weight:600">Apply custom range</div>`;
+    `<div class="dd-pin">
+       <div class="dd-head">Custom</div>
+       <div class="dd-item" style="gap:6px">
+         <input type="date" class="field" id="dFrom" value="${r.from}" style="flex:1">
+         <span class="dim">→</span>
+         <input type="date" class="field" id="dTo" value="${r.to}" style="flex:1">
+       </div>
+       <div class="dd-item" data-apply="1" style="justify-content:center;color:var(--accent);font-weight:600">Apply custom range</div>
+     </div>`;
 }
 function syncRangeUI(){
   const r = range();
@@ -245,9 +247,12 @@ function priceOf(m){ return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0]; }
 function metricOf(kind){
   return kind==="cost" ? (r=>r.cost||0)
        : kind==="messages" ? (r=>r.asst||0)
+       : kind==="time" ? (r=>r.active||0)
        : (r=>recTokens(r));
 }
-function fmtOf(kind){ return kind==="cost"?fmtUSD:kind==="messages"?fmtNum:fmtTok; }
+function fmtOf(kind){
+  return kind==="cost" ? fmtUSD : kind==="messages" ? fmtNum : kind==="time" ? fmtDur : fmtTok;
+}
 function sortRows(rows, st){
   return rows.slice().sort((a,b)=>{
     let av=a[st.key], bv=b[st.key];
@@ -552,7 +557,12 @@ function viewTools(d){
   const side = d.sessions.reduce((a,s)=>a+(s.side||0),0);
   const mcp = tools.filter(x=>categorize(x.name)==="MCP");
   const web = tools.filter(x=>categorize(x.name)==="Web").reduce((a,x)=>a+x.count,0);
+  // Gap-capped: consecutive turns count as active only within 5 minutes of each
+  // other (parser.py's ACTIVE_GAP_CAP), so a session resumed after a day away
+  // doesn't count that day as "working". A lower bound, not wall-clock length.
+  const activeSecs = d.recs.reduce((a,r)=>a+(r.active||0),0);
   const stats=[
+    {l:"Active time",v:activeSecs?fmtDur(activeSecs):"—",s:"est. — gap-capped, see the Sessions tab"},
     {l:"Tool calls",v:fmtNum(totalCalls),s:`${tools.length} distinct tools`},
     {l:"Per prompt",v:t.user?(totalCalls/t.user).toFixed(1):"—",s:`${fmtNum(t.user)} prompts`},
     {l:"Per assistant msg",v:t.msgs?(totalCalls/t.msgs).toFixed(2):"—",s:`${fmtNum(t.msgs)} messages`},
@@ -673,7 +683,9 @@ function viewSessions(d){
   const rows=sessionRows(d);
   const cols=[["when","When"],["source","Tool"],["name","Session"],["project","Project"],
     ["model","Model"],["tok","Tokens"],["cost","Est. $"],["user","Prompts"],["asst","Msgs"],
-    ["tools","Tools"],["cache","Cache %"]];
+    ["tools","Tools"],
+    ["active","Time","estimated active time — consecutive turns no more than 5 minutes apart, so a resumed session's idle days don't count"],
+    ["cache","Cache %"]];
   const sorted=sortRows(rows,S.sessSort).slice(0,400);
   document.getElementById("sessTable").innerHTML=thead(cols,S.sessSort,"sess")+"<tbody>"+
     sorted.map((s,i)=>`<tr class="clickable" data-sess="${i}">
@@ -687,6 +699,7 @@ function viewSessions(d){
       <td class="num r">${fmtTok(s.tok)}</td><td class="num r">${fmtUSD(s.cost)}</td>
       <td class="num r">${fmtNum(s.user)}</td><td class="num r">${fmtNum(s.asst||s.req)}</td>
       <td class="num r">${fmtNum(s.tools)}</td>
+      <td class="num r">${s.active?fmtDur(s.active):'<span class="dim">—</span>'}</td>
       <td class="num r">${s.cache?fmtPct(s.cache):'<span class="dim">—</span>'}</td></tr>`).join("")+"</tbody>";
   const capped = RAW.sessions_total && RAW.sessions_total > RAW.sessions.length;
   const clipped = rows.filter(x=>x.clipped).length;
@@ -726,6 +739,7 @@ function openSession(i){
     ${row("Your prompts",fmtNum(s.user))}
     ${row("Assistant msgs",fmtNum(s.asst||s.req))}
     ${row("Tool calls",fmtNum(s.tools))}
+    ${row("Active time",s.active?fmtDur(s.active):null)}
     ${row("Mode",s.mode?esc(s.mode):null)}
     ${row("Premium requests",s.prem?fmtNum(Math.round(s.prem)):null)}
     ${row("Lines added",s.lines_add?fmtNum(s.lines_add):null)}

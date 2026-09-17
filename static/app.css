@@ -155,6 +155,16 @@ nav.tabs .cnt{color:var(--text-3);font-size:11px;margin-left:6px}
 .dd-item .only{margin-left:6px;color:var(--accent);font-size:10.5px;opacity:0;text-transform:uppercase;letter-spacing:.4px;font-weight:640}
 .dd-item:hover .only{opacity:1}
 .dd-sep{height:1px;background:var(--border);margin:6px 4px}
+/* Docked footer inside a scrolling .dd-panel (the range picker's Custom block) —
+   pulled into the panel's own padding via negative margins so it sits flush
+   against the true edges, then re-padded so its content isn't flush too. Stays
+   pinned to the bottom of the panel's viewport the instant it opens, even before
+   any scrolling — that's what makes it "always visible" rather than just
+   scroll-following. */
+.dd-pin{position:sticky;bottom:-8px;margin:6px -8px -8px;padding:8px 8px 10px;
+  background:var(--surface);border-top:1px solid var(--border);
+  border-radius:0 0 var(--radius) var(--radius);
+  box-shadow:0 -8px 12px -8px rgba(0,0,0,.28)}
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:16px}
