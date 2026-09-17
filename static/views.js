@@ -262,7 +262,7 @@ function sortRows(rows, st){
   });
 }
 const TEXTCOL=new Set(["model","source","project","name","prov","cat","server","tool",
-  "path","last","when","label","title","branch","entry"]);
+  "path","last","when","label","title","branch","entry","toolsKey"]);
 function thead(cols, st, tag){
   return "<thead><tr>"+cols.map(([k,l,title])=>
     `<th data-k="${k}" data-t="${tag}" class="${TEXTCOL.has(k)?"":"r"}"${
@@ -384,16 +384,18 @@ function viewCost(d){
 function viewModels(d){
   const val = metricOf(S.provMetric), fmt = fmtOf(S.provMetric);
   const recs = d.recs.filter(r=>r.model!=="(user)");
-  const prov={}, provModels={}, provTools={}, mt={};
+  const prov={}, provModels={}, provTools={}, byModel={};
   for(const r of recs){
-    const p=providerOf(r.model), v=val(r);
+    const p=providerOf(r.model), v=val(r), tk=recTokens(r);
     prov[p]=(prov[p]||0)+v;
     (provModels[p]=provModels[p]||{})[r.model]=(provModels[p][r.model]||0)+v;
     (provTools[p]=provTools[p]||{})[r.source]=(provTools[p][r.source]||0)+v;
-    const k=r.model+"\t"+r.source;
-    const e=mt[k]||(mt[k]={model:r.model,source:r.source,tok:0,cost:0,msgs:0,in:0,out:0,cr:0,cc:0});
-    e.tok+=recTokens(r); e.cost+=r.cost||0; e.msgs+=r.asst||0;
+    const e=byModel[r.model]||(byModel[r.model]={model:r.model,tok:0,cost:0,msgs:0,in:0,out:0,cr:0,cc:0,tools:{}});
+    e.tok+=tk; e.cost+=r.cost||0; e.msgs+=r.asst||0;
     e.in+=r.in||0; e.out+=r.out||0; e.cr+=r.cr||0; e.cc+=r.cc||0;
+    const te=e.tools[r.source]||(e.tools[r.source]={source:r.source,tok:0,cost:0,msgs:0,in:0,out:0,cr:0,cc:0});
+    te.tok+=tk; te.cost+=r.cost||0; te.msgs+=r.asst||0;
+    te.in+=r.in||0; te.out+=r.out||0; te.cr+=r.cr||0; te.cc+=r.cc||0;
   }
   const provs = PROVIDERS.filter(p=>prov[p]);
   const grand = provs.reduce((a,p)=>a+prov[p],0)||1;
@@ -485,24 +487,40 @@ function viewModels(d){
   }
   document.getElementById("provMatrix").innerHTML = h+"</tbody>";
 
-  // model x tool table
-  const tokGrand = Object.values(mt).reduce((a,x)=>a+x.tok,0) || 1;
-  const rows = Object.values(mt).filter(e=>e.tok||e.cost||e.msgs).map(e=>({...e,
-    share:e.tok/tokGrand,
-    rate:e.tok?e.cost/e.tok*1e6:0, prov:providerOf(e.model)}));
-  const cols=[["model","Model"],["source","Tool"],["prov","Provider"],["tok","Tokens"],
+  // model table — one row per model, tools it ran in shown side by side, expandable for a per-tool split
+  const tokGrand = Object.values(byModel).reduce((a,x)=>a+x.tok,0) || 1;
+  const rows = Object.values(byModel).filter(e=>e.tok||e.cost||e.msgs).map(e=>{
+    const toolList = Object.values(e.tools).sort((a,b)=>b.tok-a.tok);
+    return {...e, toolList, toolsKey:toolList.map(t=>SRC[t.source].label).join(","),
+      share:e.tok/tokGrand, rate:e.tok?e.cost/e.tok*1e6:0, prov:providerOf(e.model)};
+  });
+  const cols=[["model","Model"],["toolsKey","Tool"],["prov","Provider"],["tok","Tokens"],
     ["out","Output"],["cr","Cache read"],["cost","Est. $"],["msgs","Msgs"],
     ["rate","$/Mtok","effective blended rate"],["share","Share"]];
   const sorted = sortRows(rows, S.modelSort);
+  const subRow = t=>{
+    const rate = t.tok?t.cost/t.tok*1e6:0;
+    return `<tr class="sub-row">
+      <td class="dim" colspan="2">└ ${srcBadge(t.source)}</td><td></td>
+      <td class="num r dim">${fmtTok(t.tok)}</td><td class="num r dim">${fmtTok(t.out)}</td>
+      <td class="num r dim">${fmtTok(t.cr)}</td><td class="num r dim">${fmtUSD(t.cost)}</td>
+      <td class="num r dim">${fmtNum(t.msgs)}</td><td class="num r dim">$${rate.toFixed(2)}</td>
+      <td></td></tr>`;
+  };
   document.getElementById("modelTable").innerHTML = thead(cols,S.modelSort,"model")+"<tbody>"+
-    sorted.map(r=>`<tr>
-      <td><span class="swatch" style="background:${modelColor(r.model)}"></span>${esc(r.model)}
-        ${priceOf(r.model)[0]===0?'<span class="dim" title="no price row in PRICING — cost reads as $0">⚠</span>':''}</td>
-      <td>${srcBadge(r.source)}</td><td class="dim">${r.prov}</td>
-      <td class="num r">${fmtTok(r.tok)}</td><td class="num r">${fmtTok(r.out)}</td>
-      <td class="num r">${fmtTok(r.cr)}</td><td class="num r">${fmtUSD(r.cost)}</td>
-      <td class="num r">${fmtNum(r.msgs)}</td><td class="num r">$${r.rate.toFixed(2)}</td>
-      <td class="num r">${fmtPct(r.share)}</td></tr>`).join("")+"</tbody>";
+    sorted.map(r=>{
+      const multi = r.toolList.length>1;
+      const expanded = multi && S.modelExpanded.has(r.model);
+      const main = `<tr class="${multi?"clickable":""}" ${multi?`data-model="${esc(r.model)}"`:""}>
+        <td>${multi?`<span class="caret">${expanded?"▾":"▸"}</span>`:""}<span class="swatch" style="background:${modelColor(r.model)}"></span>${esc(r.model)}
+          ${priceOf(r.model)[0]===0?'<span class="dim" title="no price row in PRICING — cost reads as $0">⚠</span>':''}</td>
+        <td>${r.toolList.map(t=>srcBadge(t.source)).join(" ")}</td><td class="dim">${r.prov}</td>
+        <td class="num r">${fmtTok(r.tok)}</td><td class="num r">${fmtTok(r.out)}</td>
+        <td class="num r">${fmtTok(r.cr)}</td><td class="num r">${fmtUSD(r.cost)}</td>
+        <td class="num r">${fmtNum(r.msgs)}</td><td class="num r">$${r.rate.toFixed(2)}</td>
+        <td class="num r">${fmtPct(r.share)}</td></tr>`;
+      return expanded ? main+r.toolList.map(subRow).join("") : main;
+    }).join("")+"</tbody>";
 }
 
 /* ---------------- TOOLS & AGENTS ---------------- */
@@ -1205,6 +1223,10 @@ document.addEventListener("click",e=>{
   if(pr){ S.projs.clear(); S.projs.add(pr.dataset.proj); S.view="sessions"; renderAll(); return; }
   const sr=e.target.closest("tr[data-sess]");
   if(sr){ openSession(+sr.dataset.sess); return; }
+  const mr=e.target.closest("tr[data-model]");
+  if(mr){ const m=mr.dataset.model;
+    if(S.modelExpanded.has(m)) S.modelExpanded.delete(m); else S.modelExpanded.add(m);
+    renderAll(); return; }
 });
 document.getElementById("drawerX").addEventListener("click",closeDrawer);
 document.getElementById("scrim").addEventListener("click",closeDrawer);

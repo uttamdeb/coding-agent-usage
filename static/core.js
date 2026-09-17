@@ -101,6 +101,7 @@ const S = {
   sessSort:{key:"end",dir:-1}, modelSort:{key:"cost",dir:-1},
   toolSort:{key:"count",dir:-1}, projSort:{key:"tokens",dir:-1},
   fileSort:{key:"bytes",dir:-1},
+  modelExpanded:new Set(),  // model names expanded to show their per-tool breakdown
 };
 
 const PRESETS = [
