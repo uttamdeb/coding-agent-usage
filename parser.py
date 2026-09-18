@@ -897,6 +897,8 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
 
 def parse_copilot(agg, obj):
     """Older Copilot format: one whole-JSON document (rewritten each save)."""
+    if obj.get("customTitle"):
+        _set_title(agg, obj["customTitle"], "custom")
     mr = {}
     for r in (obj.get("requests") or []):
         m = _copilot_apply_request(agg, r, obj.get("lastMessageDate"))
@@ -926,15 +928,19 @@ def parse_copilot_jsonl(agg, lines):
     pending = agg["state"].get("copilot_pending") or {}   # requestId -> draft, still incomplete
     touched = set()
     for line in lines:
-        if '"requests"' not in line:   # skip lines that can't touch a request (cheap)
+        if '"requests"' not in line and '"customTitle"' not in line:   # cheap skip
             continue
         try:
             o = json.loads(line)
         except Exception:
             continue
         kind, k = o.get("kind"), o.get("k")
-        if kind == 0:                                   # initial full snapshot
+        if k == ["customTitle"]:            # session renamed from the chat UI
+            _set_title(agg, o.get("v"), "custom")
+        elif kind == 0:                                   # initial full snapshot
             v = o.get("v")
+            if isinstance(v, dict) and v.get("customTitle"):
+                _set_title(agg, v["customTitle"], "custom")
             reqs = v.get("requests") if isinstance(v, dict) else None
             if isinstance(reqs, list):
                 for idx, r in enumerate(reqs):
