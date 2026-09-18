@@ -314,7 +314,7 @@ def _canonicalize(name):
     mg = re.match(r"gpt-?\s*(\d+(?:\.\d+)?)", low)
     if mg:
         suffix = ""
-        for s in ("sol", "terra", "luna", "mini", "nano", "pro", "codex"):
+        for s in ("sol", "terra", "luna", "astra", "mini", "nano", "pro", "codex"):
             if s in low:
                 suffix = " " + s.capitalize()
                 break
@@ -852,22 +852,28 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
         return None
     details = (r.get("result") or {}).get("details") or ""
     model = normalize_copilot(r.get("modelId"), details)
-    # premium multiplier from "... • 1x"
+    # billing indicator from "... • 1x" (older) or "... • 1.8 credits" (current)
     mult = 0.0
-    mm = re.search(r"([0-9.]+)x", details)
+    mm = re.search(r"([0-9.]+)\s*(?:x\b|credits?\b)", details)
     if mm:
         try:
             mult = float(mm.group(1))
         except Exception:
             mult = 0.0
-    # estimated tokens from text length (Copilot logs no real token counts)
     msg = r.get("message") or {}
     in_chars = len(msg.get("text", "")) if isinstance(msg, dict) else 0
     if isinstance(msg, dict) and msg.get("text"):
         _set_title(agg, msg["text"], "prompt")
     out_chars = _copilot_text_len(r.get("response"))
-    est_in = in_chars // 4
-    est_out = out_chars // 4
+    # Copilot logs the real per-request token counts (promptTokens/completionTokens),
+    # patched in once the request finishes — prefer those over the char/4 guess,
+    # which is all that's available for a request still mid-stream.
+    prompt_tok, completion_tok = r.get("promptTokens"), r.get("completionTokens")
+    if isinstance(prompt_tok, (int, float)) and isinstance(completion_tok, (int, float)):
+        est_in, est_out = int(prompt_tok), int(completion_tok)
+    else:
+        est_in = in_chars // 4
+        est_out = out_chars // 4
     meta = (r.get("result") or {}).get("metadata") or {}
     ntools = 0
     date = _buckets(dt)[0]
@@ -900,39 +906,82 @@ def parse_copilot(agg, obj):
         agg["state"]["dom_model"] = max(mr, key=mr.get)
 
 
-def _find_copilot_requests(o):
-    """Yield request dicts (have modelId + requestId) anywhere in a parsed structure,
-    without descending into a matched request."""
-    stack = [o]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            if "modelId" in cur and "requestId" in cur:
-                yield cur
-            else:
-                stack.extend(cur.values())
-        elif isinstance(cur, list):
-            stack.extend(cur)
-
-
 def parse_copilot_jsonl(agg, lines):
-    """Newer Copilot format: append-only mutation log. Requests appear as nested
-    objects carrying modelId+requestId; dedupe by requestId across incremental reads."""
+    """Newer Copilot format: append-only mutation log. A request starts as a
+    near-empty stub — modelId "copilot/auto" if Auto mode picked it, no result,
+    no token counts — and Copilot patches in the real resolved model, the actual
+    promptTokens/completionTokens, tool calls and credits only once the turn
+    finishes: a `result` patch at its index is what "finished" means. Until then
+    a long, tool-heavy turn can span several of the dashboard's own 20s refresh
+    cycles, still streaming. Finalizing on first sight (the old approach) froze
+    every request at whatever partial snapshot existed on ITS first refresh —
+    "Auto" mode never resolved to a real model name, tool calls made after that
+    moment went uncounted, and every token/credit figure was a rough char-count
+    guess. So: a request newly seen this read is buffered (not marked seen) and
+    carried in agg["state"] across as many incremental reads as it takes, with
+    every later patch to its index merged in; it's only finalized — counted and
+    marked seen — once a `result` patch actually lands for it."""
     seen = set(agg["state"].get("seen_req") or [])
+    req_order = agg["state"].get("req_order") or []   # array index -> requestId; requests[] only ever grows
+    pending = agg["state"].get("copilot_pending") or {}   # requestId -> draft, still incomplete
+    touched = set()
     for line in lines:
-        if '"modelId"' not in line:   # skip the huge streaming-content lines cheaply
+        if '"requests"' not in line:   # skip lines that can't touch a request (cheap)
             continue
         try:
             o = json.loads(line)
         except Exception:
             continue
-        for r in _find_copilot_requests(o):
-            rid = r.get("requestId")
-            if not rid or rid in seen:
-                continue
+        kind, k = o.get("kind"), o.get("k")
+        if kind == 0:                                   # initial full snapshot
+            v = o.get("v")
+            reqs = v.get("requests") if isinstance(v, dict) else None
+            if isinstance(reqs, list):
+                for idx, r in enumerate(reqs):
+                    rid = r.get("requestId") if isinstance(r, dict) else None
+                    if not rid:
+                        continue
+                    if idx >= len(req_order):
+                        req_order.extend([None] * (idx + 1 - len(req_order)))
+                    req_order[idx] = rid
+                    if rid not in seen and rid not in pending:
+                        pending[rid] = dict(r)
+                        touched.add(rid)
+        elif kind == 2 and k == ["requests"]:            # new request(s) appended
+            for r in (o.get("v") or []):
+                if not isinstance(r, dict):
+                    continue
+                rid = r.get("requestId")
+                if not rid:
+                    continue
+                req_order.append(rid)
+                if rid not in seen and rid not in pending:
+                    pending[rid] = dict(r)
+                    touched.add(rid)
+        elif isinstance(k, list) and len(k) >= 2 and k[0] == "requests" and isinstance(k[1], int):
+            idx = k[1]
+            rid = req_order[idx] if 0 <= idx < len(req_order) else None
+            draft = pending.get(rid) if rid else None
+            if draft is not None:
+                if len(k) == 2:                          # whole request object replaced
+                    if kind == 1 and isinstance(o.get("v"), dict):
+                        draft.update(o["v"])
+                else:                                      # a single field patched
+                    field = k[2]
+                    if kind == 2 and isinstance(draft.get(field), list):
+                        draft[field] = draft[field] + (o.get("v") or [])
+                    else:
+                        draft[field] = o.get("v")
+                touched.add(rid)
+    for rid in touched:
+        draft = pending.get(rid)
+        if draft is not None and draft.get("result") is not None:
+            _copilot_apply_request(agg, draft)
             seen.add(rid)
-            _copilot_apply_request(agg, r)
+            del pending[rid]
     agg["state"]["seen_req"] = list(seen)
+    agg["state"]["req_order"] = req_order
+    agg["state"]["copilot_pending"] = pending
 
 
 # ===========================================================================
