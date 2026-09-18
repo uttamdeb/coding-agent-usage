@@ -619,11 +619,17 @@ def parse_claude(agg, lines):
                     T["side"] += inp + out + cr + cc
                 model_tokens[model] = model_tokens.get(model, 0) + inp + out
         elif t == "user" and msg:
-            # only count genuine user turns (not tool_result echoes)
+            # only count genuine user turns (not tool_result echoes, and not the
+            # auto-generated "[Image: ...]" caption Claude Code logs as a SECOND
+            # record — same promptId/timestamp — right after an image block. It's
+            # flagged isMeta+turnCompanion: a companion artifact of one paste, not
+            # a second prompt. Without this check every screenshot you paste
+            # silently adds +1 to "your prompts".
             content = msg.get("content")
             is_tool_result = isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
-            if not is_tool_result and dt:
+            is_image_caption = bool(o.get("isMeta")) and bool(o.get("turnCompanion"))
+            if not is_tool_result and not is_image_caption and dt:
                 r = _rec(agg, _buckets(dt)[0], "(user)")
                 r["user"] += 1
                 agg["totals"]["user"] += 1
@@ -752,11 +758,15 @@ def parse_codex(agg, lines):
                     T["out"] += out; T["reason"] += reason
             elif pt == "agent_message":
                 model = cur_model or "Unknown"
-                if dt:
+                # codex-auto-review is not a model you talked to — it's Codex's own
+                # auto-approval reviewer, re-assessing the real session's transcript
+                # once per action. Its turns get tokens/cost like any other record
+                # (below), but must not inflate the human-facing prompt/message counts.
+                if dt and model != "codex-auto-review":
                     _rec(agg, _buckets(dt)[0], model)["asst"] += 1
                     agg["totals"]["asst"] += 1
             elif pt == "user_message":
-                if dt:
+                if dt and cur_model != "codex-auto-review":
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, pl.get("message") or _first_text(pl.get("content")), "prompt")
@@ -773,14 +783,15 @@ def parse_codex(agg, lines):
                 # unchanged.
                 item = pl.get("item") or {}
                 it = item.get("type")
-                if it == "UserMessage" and dt:
+                if it == "UserMessage" and dt and cur_model != "codex-auto-review":
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, _first_text(item.get("content")), "prompt")
                 elif it == "AgentMessage" and dt:
                     model = cur_model or "Unknown"
-                    _rec(agg, _buckets(dt)[0], model)["asst"] += 1
-                    agg["totals"]["asst"] += 1
+                    if model != "codex-auto-review":
+                        _rec(agg, _buckets(dt)[0], model)["asst"] += 1
+                        agg["totals"]["asst"] += 1
                 elif it == "SubAgentActivity" and item.get("kind") == "started":
                     # Counted on the PARENT's own file — a spawn marker, not a token
                     # or message event — so this session's own "delegated to a
