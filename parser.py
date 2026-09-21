@@ -625,11 +625,23 @@ def parse_claude(agg, lines):
             # flagged isMeta+turnCompanion: a companion artifact of one paste, not
             # a second prompt. Without this check every screenshot you paste
             # silently adds +1 to "your prompts".
+            #
+            # A local slash command (/compact, /model, ...) isn't one type:"user"
+            # record either — it's three: a <local-command-caveat> wrapper, the
+            # <command-name> invocation, and a <local-command-stdout> result. And
+            # right after a compact finishes, Claude Code replays its own summary
+            # back into the transcript as a 4th synthetic record flagged
+            # isCompactSummary. None of these four is something the user typed;
+            # without this check, one /compact silently added +4 to "your prompts".
             content = msg.get("content")
             is_tool_result = isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
             is_image_caption = bool(o.get("isMeta")) and bool(o.get("turnCompanion"))
-            if not is_tool_result and not is_image_caption and dt:
+            is_compact_summary = bool(o.get("isCompactSummary"))
+            is_local_command = isinstance(content, str) and content.startswith(
+                ("<local-command-caveat>", "<command-name>", "<local-command-stdout>"))
+            if (not is_tool_result and not is_image_caption and not is_compact_summary
+                    and not is_local_command and dt):
                 r = _rec(agg, _buckets(dt)[0], "(user)")
                 r["user"] += 1
                 agg["totals"]["user"] += 1
