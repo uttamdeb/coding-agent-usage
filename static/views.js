@@ -327,7 +327,7 @@ function viewCost(d){
     legendHTML("cumChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
   mk("cumChart",{type:"line",data:{labels:days2.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,ticks:{callback:v=>fmtUSD(v)}}}),
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtUSD(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y)}}}}});
 
   // cost by project (cost by *tool* is already the Overview's share-by-tool card)
@@ -480,7 +480,9 @@ function viewModels(d){
     legendHTML("modelTL", topM.map(m=>({label:m,color:modelColor(m)})));
   mk("modelTL",{type:"line",data:{labels:days.map(shortDay),datasets:tlDS},
     options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,ticks:{callback:v=>fmt(v)}}}),
+      // a stacked area must start at zero: on a one-day range every stacked value sits
+      // near the total, so auto-scaling spans e.g. $17.00-$17.15 and each tick reads "$17"
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmt(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y)}}}}});
 
   // provider x tool matrix
@@ -1024,7 +1026,7 @@ function viewStorage(){
     legendHTML("stGrowth", srcs.map(s=>({label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
   mk("stGrowth",{type:"line",data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,ticks:{callback:v=>fmtBytes(v)}}}),
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtBytes(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtBytes(c.parsed.y)}}}}});
 
   const cols=[["bytes","Size"],["source","Tool"],["project","Project"],["last","Last written"],["path","Path"]];
