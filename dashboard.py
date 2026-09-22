@@ -129,10 +129,8 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
     # treating its 0.0 as authoritative would zero out those installs.
     if source == "opencode" and logged_cost is not None:
         return logged_cost
-    pin, pout, pcw5, pcw1, pcr = P.price_of(model)
-    # Claude Sonnet 5 introductory pricing ($2/$10) through 2026-08-31
-    if model == "Claude Sonnet 5" and date and date <= "2026-08-31":
-        pin, pout, pcw5, pcw1, pcr = 2, 10, 2.5, 4, 0.20
+    # date-aware: usage from before a vendor price change bills at that day's rate
+    pin, pout, pcw5, pcw1, pcr = P.price_of(model, date)
     # if a record only has the untiered total (cc_fallback), bill it at the 5-min rate
     if cc_fallback and not (cc5 or cc1):
         cc5 = cc_fallback
@@ -327,13 +325,16 @@ def build_payload():
         "model_vendor": model_meta,
         "ai_lines": [{"date": d, **v} for d, v in sorted(ai_lines.items())],
         "pricing": {k: list(v) for k, v in P.PRICING.items()},
-        "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5 & 4.x "
-                         "$5/$25, Sonnet 5 $2/$10 intro thru 2026-08-31 then $3/$15, Sonnet 4.x "
-                         "$3/$15, Haiku $1/$5 per Mtok) with cache write billed at 1.25x "
-                         "(5-min) / 2x (1-hour) input and cache read at 0.1x; OpenAI/Codex/"
-                         "Copilot/Cursor prices are estimates. Codex GPT-5.4/5.5 use verified "
-                         "OpenAI list rates (GPT-5.5 $5/$30, cached $0.50; a >272K-input "
-                         "surcharge is not modeled, so heavy-context sessions may be higher). "
+        "pricing_history": {k: [[u, list(p)] for u, p in v] for k, v in P.PRICE_HISTORY.items()},
+        "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5.5 "
+                         "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 $2/$10, Sonnet 4.x $3/$15, "
+                         "Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) / 2x "
+                         "(1-hour) input and cache read at 0.1x (0.05x on Opus 5.5); OpenAI/"
+                         "Codex/Copilot/Cursor prices are estimates. Codex GPT-5.4/5.5/5.6/6 use "
+                         "verified OpenAI list rates (e.g. GPT-6 Sol $2/$10, cached $0.20), each "
+                         "day priced at the rate in force then — OpenAI cut GPT-5.6 prices on "
+                         "2026-07-30 and 2026-08-21; a >272K-input surcharge is not modeled, so "
+                         "heavy-context sessions may be higher. "
                          "Actual "
                          "billing may differ. Claude Code/Desktop & Codex can run on either "
                          "subscription or API billing and the logs don't record which, so $ is "

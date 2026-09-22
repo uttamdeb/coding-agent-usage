@@ -243,7 +243,13 @@ function viewOverview(d){
 }
 
 /* ---------------- helpers shared by the analytic views ---------------- */
-function priceOf(m){ return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0]; }
+/* Today's rate — or, given a record's date, the rate in force that day, so a vendor
+   price cut never re-prices history (mirrors parser.price_of + PRICE_HISTORY). */
+function priceOf(m, date){
+  if(date) for(const [until,p] of (RAW.pricing_history && RAW.pricing_history[m]) || [])
+    if(date <= until) return p;
+  return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0];
+}
 function metricOf(kind){
   return kind==="cost" ? (r=>r.cost||0)
        : kind==="messages" ? (r=>r.asst||0)
@@ -282,7 +288,7 @@ function domSource(srcMap){
 function viewCost(d){
   const t = totals(d.recs);
   let saved=0;
-  for(const r of d.recs){ const p=priceOf(r.model); saved += (r.cr||0)*(p[0]-p[4])/1e6; }
+  for(const r of d.recs){ const p=priceOf(r.model, r.date); saved += (r.cr||0)*(p[0]-p[4])/1e6; }
   const days = Math.max(1, t.days.size);
   const perDay = t.cost/days;
   const ctx = t.in+t.cr+t.cc;

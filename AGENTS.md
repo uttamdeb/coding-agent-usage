@@ -195,6 +195,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 make the normalizer map the raw id to that name. Pricing applies at request time — no
 re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
 
+**A vendor changed a price** → the new tuple goes in `PRICING` (always today's rate — the
+Optimize tab re-prices savings from it) and the old one moves into `PRICE_HISTORY` with
+the last date it applied. `price_of(model, date)` picks by each record's date, so a cut
+never re-prices history. Record a change only once it has taken effect — never pre-encode
+an announced future price: Sonnet 5's scheduled $3/$15 increase was encoded ahead of time,
+then cancelled by Anthropic, and silently overbilled every day after 2026-08-31 by 50%.
+
 **Add a tool source** → `parser.py`: paths, emit from `discover()`, write `parse_<tool>()`,
 route in `update_file()`. Then `SRC`/`ORDER` in `core.js`, a `--t-<source>` colour in
 `app.css` (re-validate the palette), bump `CACHE_VERSION`, update README + this file.

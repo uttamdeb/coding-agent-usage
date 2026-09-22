@@ -141,10 +141,13 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
 `(input, output, cache_write_5m, cache_write_1h, cache_read)` per 1M tokens; edit freely
 (recomputed on each request, no re-parse needed).
 
-- **Anthropic** rates are current list prices (Opus 5 & 4.x $5/$25, Sonnet $3/$15 — Sonnet 5 at
-  its $2/$10 intro, date-aware — Haiku $1/$5; cache write 1.25×/2× input for 5-min/1-hour,
-  cache read 0.1×). **OpenAI** GPT-5.4/5.5/5.6 are verified from OpenAI docs; older/other
-  models are estimates.
+- **Anthropic** rates are current list prices (Opus 5.5 $4/$20, Opus 5 & 4.x $5/$25, Sonnet 5
+  $2/$10, Sonnet 4.x $3/$15, Haiku $1/$5; cache write 1.25×/2× input for 5-min/1-hour, cache
+  read 0.1× — 0.05× on Opus 5.5). **OpenAI** GPT-5.4/5.5/5.6/6 are verified from OpenAI docs;
+  older/other models are estimates.
+- **Price changes are date-aware.** When a vendor cuts a price (OpenAI's GPT-5.6 cuts of
+  2026-07-30 and 2026-08-21), usage from before the change keeps the rate it had then —
+  see `parser.py → PRICE_HISTORY`.
 - **These are API-equivalent values.** If you're on a subscription (Claude Max/Pro, Codex,
   Copilot), you don't pay per token — the $ is "what this would cost at API rates."
 - **Copilot / Cursor** don't log real token counts, so their tokens (and thus $) are rough.

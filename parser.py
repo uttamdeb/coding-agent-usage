@@ -150,20 +150,27 @@ EDITOR_LABEL = {
 #   (input, output, cache_write_5m, cache_write_1h, cache_read)
 # Anthropic prices verified against the current model table (Opus 4.x = $5/$25,
 # NOT the old $15/$75 — Opus pricing dropped with 4.5). Cache write = 1.25x input
-# (5-min TTL) / 2x input (1-hour TTL); cache read = 0.1x input. OpenAI rows have
-# no cache-write tier (cw5/cw1 = 0); cached input goes in the cache_read slot.
+# (5-min TTL) / 2x input (1-hour TTL); cache read = 0.1x input, EXCEPT Opus 5.5
+# (0.05x) and Fable/Mythos 5.1 (0.025x) — so the cache_read slot is written out per
+# row, never derived from input. OpenAI rows have no cache-write tier
+# (cw5/cw1 = 0); cached input goes in the cache_read slot.
 # Codex/Copilot/Cursor are subscription-billed, so their $ is an API-equivalent
 # estimate, not an actual charge. Costs are computed at request time — edit
 # freely, no re-parse needed.
 # ---------------------------------------------------------------------------
 PRICING = {
-    # Anthropic Claude 5 family
+    # Anthropic Claude 5 family — verified against platform.claude.com pricing (2026-09-23).
+    # 5.1 keeps 5's $10/$50 but cuts cache reads to 0.025x input ($0.25, not $1).
+    "Claude Fable 5.1": (10, 50, 12.5, 20, 0.25),
+    "Claude Mythos 5.1": (10, 50, 12.5, 20, 0.25),
     "Claude Fable 5": (10, 50, 12.5, 20, 1.0),
     "Claude Mythos 5": (10, 50, 12.5, 20, 1.0),
-    # Sonnet 5 STANDARD rate ($3/$15); a $2/$10 intro rate applies through
-    # 2026-08-31 and is handled date-aware in dashboard._cost.
-    "Claude Sonnet 5": (3, 15, 3.75, 6, 0.30),
+    # Sonnet 5's $2/$10 launch "intro" rate became its standard price — Anthropic
+    # cancelled the $3/$15 increase scheduled for 2026-09-01, so there's no date split.
+    "Claude Sonnet 5": (2, 10, 2.5, 4, 0.20),
     "Claude Mythos Preview": (10, 50, 12.5, 20, 1.0),
+    # Opus 5.5 — $4/$20, the first Opus below $5/$25; cache read is 0.05x ($0.20).
+    "Claude Opus 5.5": (4, 20, 5, 8, 0.20),
     # Anthropic Opus 4.5+ — $5/$25 (current pricing)
     "Claude Opus 5": (5, 25, 6.25, 10, 0.50),
     "Claude Opus 4.8": (5, 25, 6.25, 10, 0.50),
@@ -182,19 +189,26 @@ PRICING = {
     # Anthropic Haiku — $1/$5
     "Claude Haiku 4.5": (1, 5, 1.25, 2, 0.10),
     "Claude Haiku 3.5": (0.80, 4, 1.0, 1.6, 0.08),
-    # OpenAI GPT-5.6 series (Sol/Terra/Luna) — verified from OpenAI docs (2026-07).
+    # OpenAI GPT-5.6 series (Sol/Terra/Luna) — CURRENT rates, verified against
+    # developers.openai.com/api/docs/pricing (2026-09-23). All three are cuts from
+    # the launch prices, which PRICE_HISTORY keeps for usage dated before them.
     # cache read = 0.1x input; a >272K-input surcharge (2x in/1.5x out) is not modeled.
-    "GPT-5.6 Sol": (5, 30, 0, 0, 0.50),
-    "GPT-5.6 Terra": (2.5, 15, 0, 0, 0.25),
-    "GPT-5.6 Luna": (1, 6, 0, 0, 0.10),
-    # GPT-6 Astra — verified directly against developers.openai.com/api/docs/models/
-    # gpt-6-astra (2026-09). Cache-write tiers are 0 like the other OpenAI rows:
-    # Codex's token_count event reports only cached_input_tokens (a read), never a
-    # cache-write count, so cc/cc5/cc1 stay 0 on every Codex record regardless of
-    # what's in this slot — OpenAI's own $12.50/1M cache-write rate is unused here.
+    # Sol's $4/$20 is a promo "at least through November 21, 2026" — if it reverts,
+    # move this tuple into PRICE_HISTORY and restore $5/$30 here.
+    "GPT-5.6 Sol": (4, 20, 0, 0, 0.40),
+    "GPT-5.6 Terra": (2, 12, 0, 0, 0.20),
+    "GPT-5.6 Luna": (0.20, 1.20, 0, 0, 0.02),
+    # GPT-6 — verified directly against developers.openai.com/api/docs/models/
+    # gpt-6-{astra,sol,luna} and the pricing page (2026-09-23); Sol and Luna launched
+    # 2026-09-22 at half GPT-5.6's promo price. Cache-write tiers are 0 like the
+    # other OpenAI rows: newer Codex builds DO log cache_write_input_tokens, but as
+    # a subset of input_tokens, and parse_codex leaves them inside "in" — so they
+    # bill at 1x input instead of OpenAI's 1.25x write rate, a small undercount.
     # Same >272K-input surcharge caveat as GPT-5.6/5.5 (2x in+cache, 1.5x out) is
     # not modeled — no source currently threads context length into _cost().
     "GPT-6 Astra": (10, 50, 0, 0, 1),
+    "GPT-6 Sol": (2, 10, 0, 0, 0.20),
+    "GPT-6 Luna": (0.10, 0.50, 0, 0, 0.01),
     # OpenAI GPT-5.4 / 5.5 — verified from OpenAI API pricing docs (2026-07).
     # NOTE: GPT-5.5 has a >272K-input surcharge (2x in / 1.5x out for the session)
     # not modeled here, so heavy-context Codex sessions may cost somewhat more.
@@ -219,7 +233,29 @@ PRICING = {
 }
 
 
-def price_of(display):
+# Earlier list prices, for usage logged BEFORE a vendor price change. PRICING
+# always holds today's rate (the Optimize tab re-prices savings from it); a
+# record dated on or before `until` bills at the older tuple instead, so a price
+# cut never rewrites what past usage would have cost at the time.
+#   display name -> [(until_date_inclusive, (in, out, cw5, cw1, cr)), ...], oldest first
+PRICE_HISTORY = {
+    # "Starting today", 2026-07-30: Terra -20%, Luna -80% (OpenAI staff post,
+    # community.openai.com/t/1388484).
+    "GPT-5.6 Terra": [("2026-07-29", (2.5, 15, 0, 0, 0.25))],
+    "GPT-5.6 Luna": [("2026-07-29", (1, 6, 0, 0, 0.10))],
+    # "Starting today", 2026-08-21: Sol -20% "for the next 3 months"
+    # (community.openai.com/t/1391726).
+    "GPT-5.6 Sol": [("2026-08-20", (5, 30, 0, 0, 0.50))],
+}
+
+
+def price_of(display, date=None):
+    """(in, out, cw5, cw1, cr) for a model as of `date` ("YYYY-MM-DD"), else today.
+    Unknown models price at zero."""
+    if date:
+        for until, p in PRICE_HISTORY.get(display, ()):
+            if date <= until:
+                return p
     return PRICING.get(display, (0, 0, 0, 0, 0))
 
 
