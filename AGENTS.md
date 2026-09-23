@@ -110,6 +110,16 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 
 ## Field conventions that differ by source (do not "fix" these)
 
+- **One Claude response is several records, and a resume can replay them all.** Claude
+  Code writes one `type:"assistant"` record per content block (thinking, text, each
+  tool_use), each repeating the WHOLE response's `usage` — so tokens, cost and "assistant
+  msgs" count once per `(message.id, requestId)`, and a later block adds only what grew
+  (`output_tokens` streams upward: 1 on the first block, 388 by the last). Tool calls
+  stay per record — each record carries its own block. Separately, resuming a session
+  can rewrite its whole history into the same file (same `uuid`s and timestamps, newer
+  `version`), so any record whose `uuid` was already seen in that file is skipped —
+  `state.seen_uuids`, 12 hex chars per record, persisted for incremental parsing.
+  Summing records instead inflated Claude usage ~2.3x (Sep 2026: 3.16B for 1.35B billed).
 - **A prompt typed while Claude is working is not a `type:"user"` record.** Claude Code
   queues it and writes `type:"attachment"` with `attachment.type == "queued_command"`,
   so the user branch never sees it — that silently undercounted prompts by ~23%.
@@ -147,6 +157,16 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   prompts/messages silently zero out. `parse_codex` handles both; if Codex ships a
   third shape, check `event_msg` payload types in a fresh rollout file before
   assuming the existing branches still apply.
+- **Codex usage comes from `token_usage_record` once a rollout has one.** Builds from
+  2026-09 log one per model response (with a `response_id`), written before its
+  `token_count` twin. `token_count` alone misses a compaction request (it logs zeros
+  after `compacted`) and a response cut off mid-turn. Before the first record, and in
+  older rollouts, `token_count` is used — but an event that leaves `total_token_usage`
+  unchanged is a re-emission of the previous one when a turn starts, not new usage
+  (739 of them had double-counted 112M tokens). To check the arithmetic, sum the
+  per-response usage and compare to Codex's own running total — except in
+  `guardian_review` rollouts, which are forked from the session they review and start
+  with that session's total already on the clock.
 - **Codex's session title lives outside the rollout.** `~/.codex/session_index.jsonl`
   maps thread id → `thread_name`, and that is the name Codex's own UI shows. It is
   append-only, so a renamed thread gets a NEW line and the LAST one wins — same

@@ -564,6 +564,19 @@ def _is_subagent_path(path):
 def parse_claude(agg, lines):
     project = agg["project"]
     model_tokens = {}
+    st = agg["state"]
+    # Every record already counted in this file, as the first 12 hex chars of its
+    # uuid (plenty to be unique within one file), packed into one string to keep
+    # the cache small. Resuming a session can replay its WHOLE history into the
+    # same file — same uuids and timestamps, rewritten by the newer CLI — and each
+    # replayed record was counted again: usage, tool calls and prompts alike (one
+    # session carried 1,379 of them). Persisted because parsing resumes by byte
+    # offset, so a replay arrives in a later chunk than the records it copies.
+    packed = st.get("seen_uuids") or ""
+    seen = {packed[i:i + 12] for i in range(0, len(packed), 12)}
+    fresh_uuids = []
+    # usage already counted for the last few responses — see the assistant branch
+    resp = st.get("resp") or {}
     for line in lines:
         if not line.strip():
             continue
@@ -571,6 +584,13 @@ def parse_claude(agg, lines):
             o = json.loads(line)
         except Exception:
             continue
+        uid = o.get("uuid")
+        if uid:
+            uk = (str(uid).replace("-", "") + "0" * 12)[:12]
+            if uk in seen:
+                continue
+            seen.add(uk)
+            fresh_uuids.append(uk)
         t = o.get("type")
         cwd = o.get("cwd")
         if cwd:
@@ -609,12 +629,30 @@ def parse_claude(agg, lines):
             cc1 = int(ccd.get("ephemeral_1h_input_tokens", 0) or 0)
             if cc and not (cc5 or cc1):   # older logs without the tier split
                 cc5 = cc                  # assume 5-min when untiered
+            # Claude Code writes ONE record per content block of a response —
+            # thinking, text, each tool_use — and every one repeats the whole
+            # response's usage, so summing records counted each API call ~2.3x
+            # (Sep 2026: 3.16B tokens logged for 1.35B billed). Count a response
+            # once, keyed the way the API bills it; a later block adds only what
+            # grew, since output_tokens streams upward (1 on the first block, 388
+            # by the last). With replays gone a response's blocks are contiguous,
+            # so remembering the last few responses is enough.
+            full = [inp, out, cr, cc, cc5, cc1, reason]
+            rk = f"{msg['id']}\t{o.get('requestId')}" if msg.get("id") else None
+            prev = resp.pop(rk, None) if rk else None
+            first = prev is None
+            if rk:
+                resp[rk] = full if first else [max(a, b) for a, b in zip(full, prev)]
+                while len(resp) > 8:
+                    resp.pop(next(iter(resp)))
+            if not first:
+                inp, out, cr, cc, cc5, cc1, reason = (max(0, a - b) for a, b in zip(full, prev))
             if dt:
                 r = _rec(agg, _buckets(dt)[0], model)
                 r["in"] += inp; r["out"] += out; r["cr"] += cr; r["cc"] += cc
                 r["cc5"] += cc5; r["cc1"] += cc1
                 r["reason"] += reason
-                r["asst"] += 1
+                r["asst"] += int(first)
                 # count tool_use blocks
                 tools = 0
                 content = msg.get("content")
@@ -624,7 +662,7 @@ def parse_claude(agg, lines):
                             _tool(agg, _buckets(dt)[0], blk.get("name", "tool"))
                             tools += 1
                 r["tools"] += tools
-                _bump_time(agg, dt, inp + out + cr + cc, 1)
+                _bump_time(agg, dt, inp + out + cr + cc, int(first))
                 r["active"] += _active_gap(agg["_active_last"], dt)
                 agg["_active_last"] = dt.isoformat()
                 date0 = _buckets(dt)[0]
@@ -636,21 +674,22 @@ def parse_claude(agg, lines):
                     k = f"{date0}\t{sk}"
                     e = agg["skills"].setdefault(k, {"tok": 0, "asst": 0,
                                                      "in": 0, "out": 0, "cr": 0, "cc": 0})
-                    e["tok"] += tok; e["asst"] += 1
+                    e["tok"] += tok; e["asst"] += int(first)
                     e["in"] += inp; e["out"] += out; e["cr"] += cr; e["cc"] += cc
                 # How big the context was for THIS request: everything that had to be
                 # sent, cached or not. Long conversations cost more even when cached.
-                ctx = inp + cr + cc
+                # Taken from the full record, not the delta a later block adds.
+                ctx = full[0] + full[2] + full[3]
                 b = ("0-50k" if ctx < 50_000 else "50-150k" if ctx < 150_000
                      else "150-400k" if ctx < 400_000 else "400k+")
                 ck = f"{date0}\t{b}"
                 ce = agg["ctx"].setdefault(ck, {"tok": 0, "n": 0})
-                ce["tok"] += tok; ce["n"] += 1
+                ce["tok"] += tok; ce["n"] += int(first)
                 T = agg["totals"]
                 T["in"] += inp; T["out"] += out; T["cr"] += cr; T["cc"] += cc
                 T["reason"] += reason
                 T["cc5"] += cc5; T["cc1"] += cc1
-                T["asst"] += 1
+                T["asst"] += int(first)
                 if side:                      # spawned subagent, not the main loop
                     T["side"] += inp + out + cr + cc
                 model_tokens[model] = model_tokens.get(model, 0) + inp + out
@@ -716,6 +755,8 @@ def parse_claude(agg, lines):
     agg["editor"] = "Claude Code (CLI)"
     if model_tokens:
         agg["state"]["dom_model"] = max(model_tokens, key=model_tokens.get)
+    st["seen_uuids"] = packed + "".join(fresh_uuids)
+    st["resp"] = resp
 
 
 # ===========================================================================
@@ -723,6 +764,37 @@ def parse_claude(agg, lines):
 # ===========================================================================
 # substrings that mark the giant lines we can skip without json.loads
 _CODEX_SKIP = ('"function_call_output"', '"custom_tool_call_output"', '"type": "reasoning"')
+
+
+def _codex_usage(agg, dt, u, model):
+    """Count one model response's usage. `u` is a token_count's last_token_usage or
+    a token_usage_record's usage — the two share a shape."""
+    inp = int(u.get("input_tokens", 0) or 0)
+    cached = int(u.get("cached_input_tokens", 0) or 0)
+    out = int(u.get("output_tokens", 0) or 0)
+    reason = int(u.get("reasoning_output_tokens", 0) or 0)
+    if not (dt and (inp or out)):
+        return
+    r = _rec(agg, _buckets(dt)[0], model or "Unknown")
+    # store non-cached input in "in", cached in "cr"
+    r["in"] += max(0, inp - cached)
+    r["cr"] += cached
+    r["out"] += out
+    r["reason"] += reason
+    _bump_time(agg, dt, inp + out, 0)
+    r["active"] += _active_gap(agg["_active_last"], dt)
+    agg["_active_last"] = dt.isoformat()
+    # Codex reports the FULL context it sent as input_tokens (cached or not),
+    # which is exactly the per-request context size — bucket it the same way as
+    # Claude Code so the finding is cross-tool.
+    date0 = _buckets(dt)[0]
+    b = ("0-50k" if inp < 50_000 else "50-150k" if inp < 150_000
+         else "150-400k" if inp < 400_000 else "400k+")
+    ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
+    ce["tok"] += inp + out; ce["n"] += 1
+    T = agg["totals"]
+    T["in"] += max(0, inp - cached); T["cr"] += cached
+    T["out"] += out; T["reason"] += reason
 
 
 def parse_codex(agg, lines):
@@ -774,36 +846,32 @@ def parse_codex(agg, lines):
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
+        elif t == "token_usage_record":
+            # Newer Codex builds (seen from 2026-09) log one of these per model
+            # response. They are the better usage source: token_count below logs
+            # zeros for a compaction request and nothing for a response cut off
+            # mid-turn, and re-emits old numbers. So once a rollout has shown one,
+            # usage comes from these alone — each is written BEFORE its token_count
+            # twin, so the handover can't count a response twice.
+            agg["state"]["usage_records"] = True
+            _codex_usage(agg, dt, pl.get("usage") or {}, cur_model)
         elif t == "event_msg":
             if pt == "token_count":
                 info = pl.get("info") or {}
                 last = info.get("last_token_usage") or {}
-                inp = int(last.get("input_tokens", 0) or 0)
-                cached = int(last.get("cached_input_tokens", 0) or 0)
-                out = int(last.get("output_tokens", 0) or 0)
-                reason = int(last.get("reasoning_output_tokens", 0) or 0)
-                model = cur_model or "Unknown"
-                if dt and (inp or out):
-                    r = _rec(agg, _buckets(dt)[0], model)
-                    # store non-cached input in "in", cached in "cr"
-                    r["in"] += max(0, inp - cached)
-                    r["cr"] += cached
-                    r["out"] += out
-                    r["reason"] += reason
-                    _bump_time(agg, dt, inp + out, 0)
-                    r["active"] += _active_gap(agg["_active_last"], dt)
-                    agg["_active_last"] = dt.isoformat()
-                    # Codex reports the FULL context it sent as input_tokens (cached
-                    # or not), which is exactly the per-request context size — bucket
-                    # it the same way as Claude Code so the finding is cross-tool.
-                    date0 = _buckets(dt)[0]
-                    b = ("0-50k" if inp < 50_000 else "50-150k" if inp < 150_000
-                         else "150-400k" if inp < 400_000 else "400k+")
-                    ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
-                    ce["tok"] += inp + out; ce["n"] += 1
-                    T = agg["totals"]
-                    T["in"] += max(0, inp - cached); T["cr"] += cached
-                    T["out"] += out; T["reason"] += reason
+                tot = info.get("total_token_usage") or {}
+                # A new billed response always moves the thread's running total, so
+                # an event that moves nothing is the previous one re-emitted when a
+                # turn starts (one 78K-token request was logged 3x, hours apart) —
+                # 739 of them double-counted 112M tokens across 31 rollouts. A list,
+                # not a tuple: it round-trips through the JSON cache.
+                sig = [tot.get("input_tokens"), tot.get("output_tokens"),
+                       last.get("input_tokens"), last.get("output_tokens")]
+                if (not agg["state"].get("usage_records")
+                        and (last.get("input_tokens") or last.get("output_tokens"))
+                        and not (tot and sig == agg["state"].get("last_tc"))):
+                    agg["state"]["last_tc"] = sig
+                    _codex_usage(agg, dt, last, cur_model)
             elif pt == "agent_message":
                 model = cur_model or "Unknown"
                 # codex-auto-review is not a model you talked to — it's Codex's own
