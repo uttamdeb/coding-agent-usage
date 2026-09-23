@@ -107,6 +107,21 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 - The Settings panel's **Rebuild / Delete cache** actions still drop archived
   sessions permanently; both warn about exactly this. Don't add a third path that
   clears the cache without the same warning.
+- **One conversation can hold two ledger entries**, and each used to count in full:
+  Codex's archive feature moves a rollout into `archived_sessions/` (the old path stays,
+  archived, beside the new live one), and a Copilot chat can exist as both `<uuid>.json`
+  and `<uuid>.jsonl` across its storage-format migration, or in both VS Code's and
+  Cursor's storage after Cursor imported VS Code's. `build_payload` keeps one per
+  conversation (`_one_per_conversation`: fullest, then live, then newest).
+
+## What the logs cannot show
+
+- **Claude Code bills calls it never writes down.** A `/compact` (manual or auto) runs a
+  summarization request whose usage appears nowhere in the transcript, and Claude Code's
+  background Haiku calls never do either. Its own `cost-state` records (rare) include
+  them — where they exist, the transcript matches them exactly *except* for those calls,
+  typically a few percent of cost. Don't estimate them from `compactMetadata` token sizes.
+- **`codex-auto-review` has no public price**, so its tokens are counted but cost $0.
 
 ## Field conventions that differ by source (do not "fix" these)
 
@@ -120,6 +135,14 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `version`), so any record whose `uuid` was already seen in that file is skipped —
   `state.seen_uuids`, 12 hex chars per record, persisted for incremental parsing.
   Summing records instead inflated Claude usage ~2.3x (Sep 2026: 3.16B for 1.35B billed).
+- **A Claude "prompt" is only what the user typed.** Newer builds stamp `origin.kind` on
+  a user turn (`human`, `task-notification`); anything not `human` is dropped. So is every
+  `isMeta` record — screenshot captions (older builds omit `turnCompanion`), skill bodies,
+  slash-command expansions, "Continue from where you left off." after a limit stop — plus
+  `isCompactSummary`, and records opening with a slash-command wrapper,
+  `<task-notification>` or "[Request interrupted by user". Slash commands never count, a
+  queued "/compact" included. Assistant records with model `<synthetic>` are Claude Code's
+  own notices (zero usage), not replies. Before this, ~14% of prompts were never typed.
 - **A prompt typed while Claude is working is not a `type:"user"` record.** Claude Code
   queues it and writes `type:"attachment"` with `attachment.type == "queued_command"`,
   so the user branch never sees it — that silently undercounted prompts by ~23%.
@@ -161,12 +184,18 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   2026-09 log one per model response (with a `response_id`), written before its
   `token_count` twin. `token_count` alone misses a compaction request (it logs zeros
   after `compacted`) and a response cut off mid-turn. Before the first record, and in
-  older rollouts, `token_count` is used — but an event that leaves `total_token_usage`
-  unchanged is a re-emission of the previous one when a turn starts, not new usage
-  (739 of them had double-counted 112M tokens). To check the arithmetic, sum the
-  per-response usage and compare to Codex's own running total — except in
-  `guardian_review` rollouts, which are forked from the session they review and start
-  with that session's total already on the clock.
+  older rollouts, `token_count` is used — but an event whose (`total_token_usage`,
+  `last_token_usage`) pair was already seen in the last 32 is a re-emission, not new
+  usage: Codex repeats the previous one when a turn starts, and two Codex processes on
+  one thread interleave two running totals in the same file, so a repeat can land a few
+  events late (776 had double-counted 116M tokens). To check the arithmetic, chain each
+  event onto the counter it continues and compare to Codex's own totals — neither
+  `threads.tokens_used` in `state_5.sqlite` (it resets, and omits compactions) nor a
+  `guardian_review` rollout's total (forked from the session it reviews, it starts with
+  that session's total on the clock) can be compared directly.
+- **Codex's built-in tools are `response_item`s of their own type** —
+  `web_search_call`, `tool_search_call`, `image_generation_call` — not function calls and
+  never an `event_msg`. Web searches were uncounted until they were read from there.
 - **Codex's session title lives outside the rollout.** `~/.codex/session_index.jsonl`
   maps thread id → `thread_name`, and that is the name Codex's own UI shows. It is
   append-only, so a renamed thread gets a NEW line and the LAST one wins — same

@@ -561,6 +561,14 @@ def _is_subagent_path(path):
     return "/subagents/" in p and _leaf(p).startswith("agent-")
 
 
+# How the type:"user" records Claude Code writes on its own begin — none is a
+# prompt (see the user branch of parse_claude).
+_NOT_TYPED = ("<local-command-caveat>", "<command-name>", "<command-message>",
+              "<local-command-stdout>", "<task-notification>", "[Request interrupted by user")
+# a slash command ("/compact", "/model opus") — but not a path like "/Users/..."
+_SLASH_CMD = re.compile(r"/[a-z][\w:.-]*(?:\s|$)")
+
+
 def parse_claude(agg, lines):
     project = agg["project"]
     model_tokens = {}
@@ -611,7 +619,10 @@ def parse_claude(agg, lines):
         msg = o.get("message") if isinstance(o.get("message"), dict) else None
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
 
-        if t == "assistant" and msg:
+        # model "<synthetic>" is Claude Code talking, not the model: "Prompt is too
+        # long", usage-limit notices, API errors. Zero usage, so it was only ever
+        # inflating "assistant msgs" (119 of them) and adding a "(synthetic)" row.
+        if t == "assistant" and msg and msg.get("model") != "<synthetic>":
             model = normalize_claude(msg.get("model"))
             u = msg.get("usage") or {}
             inp = int(u.get("input_tokens", 0) or 0)
@@ -694,29 +705,29 @@ def parse_claude(agg, lines):
                     T["side"] += inp + out + cr + cc
                 model_tokens[model] = model_tokens.get(model, 0) + inp + out
         elif t == "user" and msg:
-            # only count genuine user turns (not tool_result echoes, and not the
-            # auto-generated "[Image: ...]" caption Claude Code logs as a SECOND
-            # record — same promptId/timestamp — right after an image block. It's
-            # flagged isMeta+turnCompanion: a companion artifact of one paste, not
-            # a second prompt. Without this check every screenshot you paste
-            # silently adds +1 to "your prompts".
-            #
-            # A local slash command (/compact, /model, ...) isn't one type:"user"
-            # record either — it's three: a <local-command-caveat> wrapper, the
-            # <command-name> invocation, and a <local-command-stdout> result. And
-            # right after a compact finishes, Claude Code replays its own summary
-            # back into the transcript as a 4th synthetic record flagged
-            # isCompactSummary. None of these four is something the user typed;
-            # without this check, one /compact silently added +4 to "your prompts".
+            # Only count what the user actually typed. type:"user" is also how
+            # Claude Code logs tool_result echoes and much of its own traffic:
+            #   isMeta — anything the harness injects by itself: the "[Image: ...]"
+            #     caption after a pasted screenshot (older builds flag it without
+            #     turnCompanion), a skill's body, a slash command's expansion, and
+            #     "Continue from where you left off." after a "Prompt is too long"
+            #     or usage-limit stop.
+            #   isCompactSummary — the summary a finished /compact replays back.
+            #   origin.kind other than "human" — newer builds stamp who wrote a
+            #     turn, and a finished background task arrives as "task-notification".
+            #   _NOT_TYPED openings — the three records a slash command (/compact,
+            #     /model, ...) writes, a task notification from before `origin`
+            #     existed, and the marker pressing Esc leaves behind.
+            # Without these, one /compact added +4 to "your prompts", a pasted
+            # screenshot +1, and ~14% of all prompts were never typed at all.
             content = msg.get("content")
             is_tool_result = isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
-            is_image_caption = bool(o.get("isMeta")) and bool(o.get("turnCompanion"))
-            is_compact_summary = bool(o.get("isCompactSummary"))
-            is_local_command = isinstance(content, str) and content.startswith(
-                ("<local-command-caveat>", "<command-name>", "<local-command-stdout>"))
-            if (not is_tool_result and not is_image_caption and not is_compact_summary
-                    and not is_local_command and dt):
+            org = o.get("origin")
+            not_typed = (bool(o.get("isMeta")) or bool(o.get("isCompactSummary"))
+                         or (isinstance(org, dict) and org.get("kind", "human") != "human")
+                         or _first_text(content).lstrip().startswith(_NOT_TYPED))
+            if not is_tool_result and not not_typed and dt:
                 r = _rec(agg, _buckets(dt)[0], "(user)")
                 r["user"] += 1
                 agg["totals"]["user"] += 1
@@ -738,6 +749,8 @@ def parse_claude(agg, lines):
             #   empty prompts are queue bookkeeping with no text.
             #   <ide_opened_file> / <system-reminder> are context the editor injects
             #     through the same channel; they are not prompts either.
+            #   a queued "/compact" or "/mcp" is a slash command, not a prompt — the
+            #     same reason the user branch drops <command-name> records.
             # Deliberately NOT deduped against type:"user" records: the same text
             # can legitimately appear in both, seconds apart, because the user
             # really did press enter twice (verified: "yes od it" at :09 as a user
@@ -746,7 +759,8 @@ def parse_claude(agg, lines):
             a = o.get("attachment") or {}
             if a.get("type") == "queued_command" and a.get("commandMode") == "prompt" and dt:
                 txt = _first_text(a.get("prompt")).strip()
-                if txt and not txt.startswith(("<ide_", "<system-reminder")):
+                if (txt and not txt.startswith(("<ide_", "<system-reminder"))
+                        and not _SLASH_CMD.match(txt)):
                     r = _rec(agg, _buckets(dt)[0], "(user)")
                     r["user"] += 1
                     agg["totals"]["user"] += 1
@@ -764,6 +778,9 @@ def parse_claude(agg, lines):
 # ===========================================================================
 # substrings that mark the giant lines we can skip without json.loads
 _CODEX_SKIP = ('"function_call_output"', '"custom_tool_call_output"', '"type": "reasoning"')
+# response_item types that are a built-in tool call -> the tool name to count it as
+_CODEX_BUILTIN_TOOLS = {"web_search_call": "web_search", "tool_search_call": "tool_search",
+                        "image_generation_call": "image_generation"}
 
 
 def _codex_usage(agg, dt, u, model):
@@ -860,17 +877,23 @@ def parse_codex(agg, lines):
                 info = pl.get("info") or {}
                 last = info.get("last_token_usage") or {}
                 tot = info.get("total_token_usage") or {}
-                # A new billed response always moves the thread's running total, so
-                # an event that moves nothing is the previous one re-emitted when a
-                # turn starts (one 78K-token request was logged 3x, hours apart) —
-                # 739 of them double-counted 112M tokens across 31 rollouts. A list,
-                # not a tuple: it round-trips through the JSON cache.
+                # A new billed response always moves its thread's running total, so
+                # an event whose (total, last) pair was already seen is a re-emission
+                # — Codex repeats the previous token_count when a turn starts (one
+                # 78K-token request was logged 3x, hours apart). Checked against the
+                # last 32 events, not just the previous one: two Codex processes on
+                # one thread interleave two running totals in the same file, so a
+                # re-emission can land a few events after its original. 776 of them
+                # double-counted 116M tokens. Lists, not tuples: they round-trip
+                # through the JSON cache.
                 sig = [tot.get("input_tokens"), tot.get("output_tokens"),
                        last.get("input_tokens"), last.get("output_tokens")]
+                recent = agg["state"].setdefault("recent_tc", [])
                 if (not agg["state"].get("usage_records")
                         and (last.get("input_tokens") or last.get("output_tokens"))
-                        and not (tot and sig == agg["state"].get("last_tc"))):
-                    agg["state"]["last_tc"] = sig
+                        and not (tot and sig in recent)):
+                    recent.append(sig)
+                    del recent[:-32]
                     _codex_usage(agg, dt, last, cur_model)
             elif pt == "agent_message":
                 model = cur_model or "Unknown"
@@ -881,6 +904,7 @@ def parse_codex(agg, lines):
                 if dt and model != "codex-auto-review":
                     _rec(agg, _buckets(dt)[0], model)["asst"] += 1
                     agg["totals"]["asst"] += 1
+                    _bump_time(agg, dt, 0, 1)   # heatmap msgs — else Codex never shows there
             elif pt == "user_message":
                 if dt and cur_model != "codex-auto-review":
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
@@ -908,17 +932,21 @@ def parse_codex(agg, lines):
                     if model != "codex-auto-review":
                         _rec(agg, _buckets(dt)[0], model)["asst"] += 1
                         agg["totals"]["asst"] += 1
+                        _bump_time(agg, dt, 0, 1)
                 elif it == "SubAgentActivity" and item.get("kind") == "started":
                     # Counted on the PARENT's own file — a spawn marker, not a token
                     # or message event — so this session's own "delegated to a
                     # subagent" count is known without reading any other file.
                     agg["_spawned"] = agg.get("_spawned", 0) + 1
-            elif pt in ("web_search_call", "web_search_end"):
-                if pt == "web_search_call" and dt:
-                    _tool(agg, _buckets(dt)[0], "web_search")
-                    _rec(agg, _buckets(dt)[0], cur_model or "Unknown")["tools"] += 1
         elif t == "response_item" and dt:
-            if pt in ("function_call", "custom_tool_call"):
+            if pt in _CODEX_BUILTIN_TOOLS:
+                # The model's own built-in tools are response items of their own
+                # type, not function calls — and never an event_msg, which is where
+                # this used to look: web search alone was 298 calls never counted.
+                date = _buckets(dt)[0]
+                _tool(agg, date, _CODEX_BUILTIN_TOOLS[pt])
+                _rec(agg, date, cur_model or "Unknown")["tools"] += 1
+            elif pt in ("function_call", "custom_tool_call"):
                 date = _buckets(dt)[0]
                 nm = pl.get("name") or ("function" if pt == "function_call" else "custom_tool")
                 # Codex does not prefix MCP tools the way Claude Code does — it keeps

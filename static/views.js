@@ -1515,7 +1515,8 @@ function findSkills(d){
    at cache-read rates, because the read itself scales with the context. */
 function findBigContext(d){
   if(!RAW.ctx || !RAW.ctx.length) return null;
-  const inRange = RAW.ctx.filter(x => x.date>=d.r.from && x.date<=d.r.to);
+  // ctx rows carry a source but no model/project, so only the tool filter applies
+  const inRange = RAW.ctx.filter(x => passSrc(x.source) && x.date>=d.r.from && x.date<=d.r.to);
   if(!inRange.length) return null;
   const by={}; let tot=0; const srcs=new Set();
   for(const x of inRange){ by[x.bucket]=(by[x.bucket]||{tok:0,n:0});
@@ -1525,7 +1526,8 @@ function findBigContext(d){
   const big=(by["150-400k"]?.tok||0)+(by["400k+"]?.tok||0);
   const share=big/tot;
   if(share < 0.4) return null;
-  const total=d.recs.reduce((a,r)=>a+(r.cost||0),0);
+  // the share was measured on the tools that log context size, so apply it to theirs
+  const total=d.recs.reduce((a,r)=>a+(srcs.has(r.source)?(r.cost||0):0),0);
   const order=["0-50k","50-150k","150-400k","400k+"];
   return {
     id:"big-context", impact: total*share*0.15, sev: share>0.7?"high":"low", tools:[...srcs],

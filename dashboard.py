@@ -13,14 +13,14 @@ day / model / tool / project / hour, and serves an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, sys, json, time, threading, argparse, shutil, mimetypes
+import os, re, sys, json, time, threading, argparse, shutil, mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 41
+CACHE_VERSION = 43
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -138,6 +138,48 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
             + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0
 
 
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _conversation_key(path, agg):
+    """Cache entries that hold the SAME conversation. Codex's archive feature
+    moves a rollout into archived_sessions/: the old path stays in the ledger as
+    archived while the new one parses live. A Copilot chat can sit under two
+    paths too: <uuid>.json and <uuid>.jsonl across its storage-format migration,
+    or the same chat in Cursor's storage after Cursor imported VS Code's. Every
+    copy used to be counted in full."""
+    src = agg.get("source")
+    if src == "codex":
+        return ("codex", os.path.basename(path))
+    if src == "copilot":
+        m = _UUID.search(os.path.basename(path)) or _UUID.search(path)
+        return ("copilot", m.group(0)) if m else None
+    return None
+
+
+def _one_per_conversation(items):
+    """Keep one copy of each conversation: the fullest (a later copy is a superset
+    of an earlier one), then the live one, then the newest."""
+    best, out = {}, []
+    for path, agg in items:
+        k = _conversation_key(path, agg)
+        if k is None:
+            out.append(agg)
+            continue
+        act = sum(r.get("asst", 0) + r.get("user", 0) + r.get("in", 0) + r.get("out", 0)
+                  + r.get("cr", 0) for r in agg.get("records", {}).values())
+        rank = (act, not agg.get("archived"), agg.get("mtime") or 0)
+        if k not in best or rank > best[k][0]:
+            best[k] = (rank, agg)
+    return out + [a for _, a in best.values()]
+
+
+def _did_something(s):
+    """A session that produced any turn — the Sessions list and the per-project
+    session count must agree on what counts as one."""
+    return bool(s.get("asst") or s.get("req") or s.get("in") or s.get("user"))
+
+
 def build_payload():
     records = {}      # (date, source, model, project) -> aggregates
     tools = {}        # (date, source, name) -> count
@@ -150,7 +192,8 @@ def build_payload():
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
 
     with _lock:
-        files = list(_state["files"].values())
+        items = list(_state["files"].items())
+    files = _one_per_conversation(items)
 
     for agg in files:
         source = agg["source"]
@@ -170,10 +213,14 @@ def build_payload():
         for key, r in agg.get("records", {}).items():
             date, model = key.split("\t", 1)
             if model == "(user)":
-                # only carries user-turn counts
+                # carries user-turn counts, plus any active time a source books on
+                # the gap before a prompt (opencode does) — the Sessions tab's
+                # per-day split already includes it, so leaving it out here made the
+                # two disagree (96s vs 318s for one session)
                 rk = (date, source, "(user)", project, ide)
                 slot = records.setdefault(rk, _zero())
                 slot["user"] += r.get("user", 0)
+                slot["active"] += r.get("active", 0.0)
                 continue
             rk = (date, source, model, project, ide)
             slot = records.setdefault(rk, _zero())
@@ -221,7 +268,10 @@ def build_payload():
         pk = (project, source)
         pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
         pr["tokens"] += file_tokens; pr["msgs"] += file_msgs
-        pr["sessions"] += 1; pr["cost"] += file_cost
+        # sessions, not files: one Cursor store holds many, and a chat that was
+        # opened but never used is dropped from the Sessions list below
+        pr["sessions"] += sum(1 for s in agg.get("sessions", []) if _did_something(s))
+        pr["cost"] += file_cost
         for day, v in (agg.get("state", {}).get("ai_lines") or {}).items():
             slot = ai_lines.setdefault(day, {"tab_suggested": 0, "tab_accepted": 0,
                                              "composer_suggested": 0, "composer_accepted": 0})
@@ -246,7 +296,8 @@ def build_payload():
                 dd[f] += r.get(f, 0)
             dd["prem"] += r.get("prem", 0.0)
             dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
-                                r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date)
+                                r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
+                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
 
         # sessions
         for s in agg.get("sessions", []):
@@ -302,8 +353,7 @@ def build_payload():
     # A session where you typed but never got a reply is still something that
     # happened — `records` counts those user turns, so dropping the session here
     # made the two paths disagree (1,982 prompts vs 1,980).
-    sessions = [s for s in sessions
-                if (s.get("asst") or s.get("req") or s.get("in") or s.get("user"))]
+    sessions = [s for s in sessions if _did_something(s)]
     sessions.sort(key=lambda s: (s.get("end") or ""), reverse=True)
 
     return {
